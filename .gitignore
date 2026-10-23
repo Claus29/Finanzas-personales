@@ -13,3 +13,4 @@ venv/
 # Bases de datos locales
 *.db
 *.sqlite3
+!.env.example
