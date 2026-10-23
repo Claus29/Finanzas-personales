@@ -1,0 +1,15 @@
+# Claves privadas (Enable Banking) y secretos: NUNCA al repositorio
+*.pem
+*.key
+.env
+.env.*
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Bases de datos locales
+*.db
+*.sqlite3
