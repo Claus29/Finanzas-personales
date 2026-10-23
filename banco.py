@@ -38,6 +38,9 @@ class EnableBanking:
             raise ErrorBanco(f"Error {r.status_code} en {method} {path}: {r.text}")
         return r.json()
 
+    def aplicacion(self):
+        return self._api("GET", "/application")
+
     def buscar_banco(self, nombre, pais):
         bancos = self._api("GET", "/aspsps", params={"country": pais})["aspsps"]
         for banco in bancos:

@@ -1,0 +1,2 @@
+# Los .bat deben tener finales de linea de Windows (CRLF) tambien al descargarlos sueltos desde GitHub.
+*.bat -text

@@ -1,83 +1,85 @@
-"""Bot de Telegram: cada día a las 00:00 consulta el saldo de N26 y te lo envía.
+"""Bot de Telegram: consulta el saldo de N26 una vez al día, a las 00:00, y te lo envía.
 
-Solo hace una petición al banco al día y solo habla con TELEGRAM_CHAT_ID.
+Si a las 00:00 el ordenador estaba apagado, dormido o sin internet, lo envía en cuanto
+vuelve a estar disponible. Nunca hace más de una consulta al banco al día.
+Solo habla con TELEGRAM_CHAT_ID.
     python bot.py
 """
 import asyncio
 import logging
 import os
-from datetime import datetime, time
-from zoneinfo import ZoneInfo
+import sys
+from datetime import time
+from logging.handlers import RotatingFileHandler
+from time import sleep
 
-from dotenv import load_dotenv
+import requests
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-from banco import EnableBanking, ErrorBanco, uids_de_cuentas
+from saldo import BASE, cargar_config, consultado_hoy, consultar_saldo, marcar_consulta, zona
 
-load_dotenv()
-logging.basicConfig(format="%(asctime)s %(levelname)s %(message)s", level=logging.INFO)
+cargar_config()
+logging.basicConfig(
+    handlers=[RotatingFileHandler(BASE / "bot.log", maxBytes=1_000_000, backupCount=2, encoding="utf-8")],
+    format="%(asctime)s %(levelname)s %(message)s",
+    level=logging.INFO,
+)
+# httpx registra cada petición a Telegram con el token en la URL: no queremos eso en el log.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+# Con pythonw no hay consola: cualquier error fatal tiene que quedar en bot.log.
+sys.excepthook = lambda *error: logging.critical("Error fatal", exc_info=error)
 
 TOKEN = os.environ["TELEGRAM_TOKEN"]
-CHAT_ID = int(os.environ["TELEGRAM_CHAT_ID"]) if os.environ.get("TELEGRAM_CHAT_ID") else None
-ZONA = ZoneInfo(os.environ.get("ZONA_HORARIA", "Europe/Madrid"))
-DIAS_AVISO_CADUCIDAD = 15
+CHAT_ID = int(os.environ["TELEGRAM_CHAT_ID"])
+COMPROBAR_CADA = 30 * 60  # segundos entre comprobaciones de "¿se envió ya el saldo de hoy?"
+candado = asyncio.Lock()
 
 
-def formatear_importe(importe, moneda):
-    texto = f"{float(importe):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-    return f"{texto} €" if moneda == "EUR" else f"{texto} {moneda}"
-
-
-def consultar_saldo():
-    """Hace la consulta al banco (bloqueante) y devuelve el mensaje para Telegram."""
-    eb = EnableBanking(os.environ["EB_APP_ID"], os.environ["EB_KEY_PATH"])
-    sesion = eb.sesion(os.environ["EB_SESSION_ID"])
-    if sesion.get("status") != "AUTHORIZED":
-        return (f"⚠️ El permiso de acceso a N26 no está activo (estado: {sesion.get('status')}).\n"
-                "Ejecuta `python conectar_banco.py` para volver a conectarlo.")
-
-    lineas = [f"💰 *Saldo N26* — {datetime.now(ZONA):%d/%m/%Y}"]
-    for uid in uids_de_cuentas(sesion):
-        importe, moneda, _ = eb.saldo_actual(uid)
-        lineas.append(formatear_importe(importe, moneda))
-
-    caduca = sesion.get("access", {}).get("valid_until")
-    if caduca:
-        dias = (datetime.fromisoformat(caduca.replace("Z", "+00:00")) - datetime.now(ZONA)).days
-        if dias <= DIAS_AVISO_CADUCIDAD:
-            lineas.append(f"\n⏳ El permiso del banco caduca en {dias} días. "
-                          "Ejecuta `python conectar_banco.py` para renovarlo.")
-    return "\n".join(lineas)
-
-
-async def enviar_saldo_diario(context: ContextTypes.DEFAULT_TYPE):
-    try:
-        mensaje = await asyncio.to_thread(consultar_saldo)
-    except (ErrorBanco, OSError, KeyError) as e:
-        logging.exception("Fallo al consultar el saldo")
-        # Sin Markdown: el texto del error puede traer caracteres que rompen el formato.
-        await context.bot.send_message(CHAT_ID, f"❌ No he podido consultar el saldo de hoy:\n{e}")
-        return
-    await context.bot.send_message(CHAT_ID, mensaje, parse_mode="Markdown")
+async def enviar_saldo(context: ContextTypes.DEFAULT_TYPE):
+    async with candado:
+        if consultado_hoy():
+            return
+        try:
+            mensaje = await asyncio.to_thread(consultar_saldo)
+        except (requests.ConnectionError, requests.Timeout):
+            # Sin internet todavía (p. ej. el PC acaba de despertar): se reintenta más tarde.
+            logging.warning("Sin conexión; reintento en %s minutos", COMPROBAR_CADA // 60)
+            return
+        except Exception as e:
+            marcar_consulta()
+            logging.exception("Fallo al consultar el saldo")
+            # Sin Markdown: el texto del error puede traer caracteres que rompen el formato.
+            await context.bot.send_message(CHAT_ID, f"❌ No he podido consultar el saldo de hoy:\n{e}")
+            return
+        marcar_consulta()
+        await context.bot.send_message(CHAT_ID, mensaje, parse_mode="Markdown")
+        logging.info("Saldo enviado")
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if CHAT_ID is None:
-        await update.message.reply_text(
-            f"Tu chat ID es {update.effective_chat.id}. Ponlo en TELEGRAM_CHAT_ID en el .env y reinicia el bot.")
-    elif update.effective_chat.id == CHAT_ID:
+    if update.effective_chat.id == CHAT_ID:
         await update.message.reply_text("✅ Bot activo. Te enviaré tu saldo de N26 cada día a las 00:00.")
 
 
+def esperar_internet():
+    """Al arrancar con Windows puede no haber red todavía; sin esto el bot se cerraría."""
+    while True:
+        try:
+            requests.get("https://api.telegram.org", timeout=10)
+            return
+        except requests.RequestException:
+            logging.warning("Sin conexión con Telegram; reintento en 30 segundos")
+            sleep(30)
+
+
 def main():
+    esperar_internet()
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    if CHAT_ID is not None:
-        app.job_queue.run_daily(enviar_saldo_diario, time=time(0, 0, tzinfo=ZONA), name="saldo_diario")
-        logging.info("Saldo programado cada día a las 00:00 (%s)", ZONA)
-    else:
-        logging.warning("Falta TELEGRAM_CHAT_ID: escribe /start al bot para conocerlo.")
+    app.job_queue.run_daily(enviar_saldo, time=time(0, 0, tzinfo=zona()), name="saldo_diario")
+    app.job_queue.run_repeating(enviar_saldo, interval=COMPROBAR_CADA, first=30, name="recuperar_envio")
+    logging.info("Bot iniciado. Saldo programado cada día a las 00:00 (%s)", zona())
     app.run_polling()
 
 

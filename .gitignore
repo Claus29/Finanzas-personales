@@ -14,3 +14,8 @@ venv/
 *.db
 *.sqlite3
 !.env.example
+
+# Archivos que genera el bot al funcionar
+bot.log*
+ultima_consulta.txt
+version.txt
