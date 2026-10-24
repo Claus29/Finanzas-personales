@@ -40,8 +40,12 @@ POR_DEFECTO = {
     "AVISO_GASTO_GRANDE": "1",
     "AVISO_SUSCRIPCIONES": "0",
     # v6: recordatorio del día de pago (lo que debes, lo que te deben y suscripciones)
-    "HORA_AVISO_PAGO": "00:00",
+    "HORA_AVISO_PAGO": "00:00",  # v6; desde la v7 se usa la franja de abajo (se conserva la clave)
     "AVISO_ME_DEBEN": "1",
+    # v7: recordatorios de deudas repartidos en una franja, y días para lo que te deben sin día fijo
+    "FRANJA_DEUDAS_DESDE": "08:00",
+    "FRANJA_DEUDAS_HASTA": "14:00",
+    "DIAS_AVISO_SIN_DIA": "5,15,25",
 }
 
 
@@ -103,6 +107,36 @@ def hora_aviso_pago():
     except ValueError:
         pass
     return POR_DEFECTO["HORA_AVISO_PAGO"]
+
+
+def _hora(clave):
+    try:
+        horas, minutos = (int(x) for x in valor(clave).split(":"))
+        if 0 <= horas < 24 and 0 <= minutos < 60:
+            return horas, minutos
+    except ValueError:
+        pass
+    horas, minutos = POR_DEFECTO[clave].split(":")
+    return int(horas), int(minutos)
+
+
+def franja_deudas():
+    """((h, m) de inicio, (h, m) de fin) de los recordatorios de deudas (08:00–14:00 por defecto)."""
+    desde, hasta = _hora("FRANJA_DEUDAS_DESDE"), _hora("FRANJA_DEUDAS_HASTA")
+    if hasta <= desde:
+        return (8, 0), (14, 0)
+    return desde, hasta
+
+
+def dias_aviso_sin_dia():
+    try:
+        dias = sorted({int(x) for x in valor("DIAS_AVISO_SIN_DIA").replace(" ", "").split(",") if x})
+        dias = [x for x in dias if 1 <= x <= 31]
+        if dias:
+            return dias
+    except ValueError:
+        pass
+    return [5, 15, 25]
 
 
 def saldo_diario_activo():

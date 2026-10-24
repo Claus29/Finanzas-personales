@@ -11,7 +11,7 @@ Solo habla con TELEGRAM_CHAT_ID. Lo arranca principal.py.
 import asyncio
 import html
 import logging
-from datetime import date, datetime, time, timedelta
+from datetime import date, time, timedelta
 
 import requests
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, Update
@@ -22,6 +22,7 @@ import actualizacion
 import analisis
 import autenticacion
 import avisos
+import bot_deudas
 import ciclo
 import config
 import consultas
@@ -32,21 +33,24 @@ import exportar
 import graficos
 import metas
 import movimientos
-from formato import (DIAS_SEMANA, euros, euros_cortos, fecha_corta, leer_entero, leer_fecha, leer_hora, leer_importe,
+from formato import (DIAS_SEMANA, euros, euros_cortos, leer_entero, leer_fecha, leer_hora, leer_importe,
                      leer_mes, sumar_meses)
 from movimientos import CATEGORIAS
 
 # Súbelo y cambia NOVEDADES en cada actualización con cambios visibles: el bot las anuncia una vez.
-VERSION = 6
-NOVEDADES = ("✨ <b>Bot actualizado: versión 6</b>\n\n"
-             "• 🤝 <b>Lo que te deben</b>, igual de completo que lo que debes: pago único con día de pago, "
-             "a plazos o sin fecha (se la pones después). «Me ha pagado», «me pagó una parte» y aplazar.\n"
-             "• 📺 <b>Suscripciones</b> con su día de cobro. En 📊 Análisis › Suscripciones puedes apuntar con un "
-             "toque las que detecto en tu banco.\n"
-             "• 🔔 <b>Recordatorio el día de pago a las 00:00</b> de todo lo que tiene fecha (lo que debes, lo que te "
-             "deben, lo aplazado y las suscripciones), y cada día si se atrasa. La hora se cambia en ⚙️ Ajustes.\n"
-             "• Lo que te deben no se suma al saldo neto: aparece aparte («si te pagan, tu neto sería...»).\n"
-             "• Tus deudas, metas y datos se conservan.")
+VERSION = 7
+NOVEDADES = ("✨ <b>Bot actualizado: versión 7</b>\n\n"
+             "• 🔁 <b>A plazos, como de verdad</b>: pones el <b>total</b> (ej. 409,25 €) y la cuota (80 €) o el número de "
+             "cuotas, y lo que ya llevas pagado. Ves cuánto queda, cuántas cuotas faltan y cuándo terminas.\n"
+             "• Cada cuota <b>el día fijo que elijas, en cuanto cobres</b> (o, si te deben, <b>sin día fijo</b>).\n"
+             "• 💸 <b>Otra cantidad</b>: si un mes pagas más o menos, la cuota del mes queda cubierta y la diferencia va al final.\n"
+             "• ⏭️ Si una cuota no se paga en su mes: <b>pasarla al mes siguiente</b> o <b>pagar las dos juntas</b> "
+             "(eliges en cada deuda). Nunca cuenta como pagada.\n"
+             "• 🔔 Recordatorios de deudas <b>repartidos entre las 08:00 y las 14:00</b>, y nada se da por pagado: "
+             "cada pago pide confirmación y, si lo ignoras, vuelve cada día.\n"
+             "• 🏠 Gastos fijos al cobrar (cada cobro) distintos de pagos únicos al cobrar (una sola vez).\n"
+             "• 📊 Nuevo <b>Análisis de deudas</b>: % de tu salario comprometido, libre de deudas en..., calendario, "
+             "puntualidad, quién te paga a tiempo, consejos y gráfico.")
 VERSION_ANUNCIADA = config.BASE / "version_anunciada.txt"
 
 B_SALDO, B_ANALISIS, B_DEUDAS, B_METAS, B_RECORDATORIOS, B_AJUSTES = (
@@ -130,16 +134,11 @@ async def pantalla_analisis(update, context, nuevo=False):
                   [[("📆 Ciclo actual", "a:ciclo"), ("🎯 Presupuesto", "a:pres")],
                    [("🧩 Categorías", "a:cat:ciclo"), ("📈 Evolución", "a:evo:30")],
                    [("📅 Semana", "a:sem"), ("🔁 Suscripciones", "a:subs")],
-                   [("🏷️ Corregir una categoría", "a:corregir")]], nuevo)
+                   [("💳 Deudas", "ad:res"), ("🏷️ Corregir categoría", "a:corregir")]], nuevo)
 
 
 async def pantalla_deudas(update, context, nuevo=False):
-    filas = [[("➕ Nueva", "d:nueva"), ("✅ Marcar pagado", "d:pagar")]]
-    lista = deudas.activas()
-    for n in range(0, len(lista), 2):
-        filas.append([(f"{deudas.TIPOS[d['tipo']].split(' ')[0]} {d['nombre'][:18]}", f"d:ver:{d['id']}")
-                      for d in lista[n:n + 2]])
-    await mostrar(update, context, analisis.texto_deudas(), filas, nuevo)
+    await bot_deudas.pantalla(update, context, nuevo)
 
 
 async def pantalla_metas(update, context, nuevo=False):
@@ -154,7 +153,8 @@ async def pantalla_recordatorios(update, context, nuevo=False):
     lineas = ["⏰ <b>Recordatorios</b>", "",
               f"💶 Cobro: desde el día {desde}, insistiendo hasta que lo registres (siempre activo)"]
     lineas += [f"{'🔔' if config.aviso_activo(c) else '🔕'} {n}" for c, n in AVISOS_CONFIGURABLES]
-    lineas.append("<i>(Los avisos automáticos se activan o desactivan en ⚙️ Ajustes › Avisos)</i>")
+    lineas.append(f"<i>Los de deudas se reparten entre las {texto_franja()} y piden confirmación.\n"
+                  "Los avisos se activan o desactivan en ⚙️ Ajustes › Avisos.</i>")
     lineas += ["", "<b>Tus recordatorios:</b>"]
     if propios:
         lineas += [f"{'🔔' if r['activo'] else '🔕'} {e(r['texto'])} · {avisos.describir_recordatorio(r)}" for r in propios]
@@ -164,6 +164,11 @@ async def pantalla_recordatorios(update, context, nuevo=False):
     filas += [[(f"{'🔕 Pausar' if r['activo'] else '🔔 Activar'} «{r['texto'][:15]}»", f"r:tog:{r['id']}"),
                ("🗑️", f"r:bo:{r['id']}")] for r in propios]
     await mostrar(update, context, "\n".join(lineas), filas, nuevo)
+
+
+def texto_franja():
+    (h1, m1), (h2, m2) = config.franja_deudas()
+    return f"{h1:02d}:{m1:02d}–{h2:02d}:{m2:02d}"
 
 
 def texto_ajustes():
@@ -176,7 +181,8 @@ def texto_ajustes():
              f"🔄 Actualización con el banco: cada día a las <b>{horas:02d}:{minutos:02d}</b> (en silencio)\n"
              f"🔢 Consultas al banco hoy: {usadas}/{limite} (límite diario, también para «Actualizar ahora»)\n"
              f"💶 Cobro: entre el día <b>{desde}</b> y el <b>{hasta}</b>\n"
-             f"🔔 Recordatorios de pago: el día de pago a las <b>{config.hora_aviso_pago()}</b>\n"
+             f"🔔 Recordatorios de deudas: entre las <b>{texto_franja()}</b>\n"
+             f"🤝 Lo que te deben sin día fijo: te pregunto los días {', '.join(map(str, config.dias_aviso_sin_dia()))}\n"
              f"🎯 Presupuesto por ciclo: {euros_cortos(presupuesto) if presupuesto else 'sin límite'}\n"
              f"⚠️ Aviso de saldo neto bajo: {('por debajo de ' + euros_cortos(umbral)) if umbral else 'desactivado'}")
     if limite > config.LIMITE_RECOMENDADO:
@@ -190,7 +196,8 @@ def filas_ajustes():
     return [[("➖", "aj:lim:-"), (f"Límite: {config.limite_diario()}/día", "nada"), ("➕", "aj:lim:+")],
             [(f"⏰ Hora de actualización: {horas:02d}:{minutos:02d}", "aj:hora")],
             [(f"💶 Días de cobro: {desde}–{hasta}", "aj:cobro")],
-            [(f"🔔 Hora recordatorios de pago: {config.hora_aviso_pago()}", "aj:hp")],
+            [(f"🔔 Recordatorios de deudas: {texto_franja()}", "aj:fr")],
+            [(f"🤝 Sin día fijo: días {'·'.join(map(str, config.dias_aviso_sin_dia()))}", "aj:ds")],
             [("🎯 Presupuesto", "aj:pres"), ("⚠️ Saldo bajo", "aj:umbral")],
             [("🔔 Avisos", "aj:avisos"), ("🔄 Actualizar ahora", "aj:act")],
             [("📤 Exportar a Excel", "aj:exp"), ("✖️ Cerrar", "aj:cerrar")]]
@@ -255,92 +262,8 @@ async def responder_pregunta(update, context, espera, escrito):
         return await guardar_cobro(update, context, espera["importe"], espera["tipo"], fecha)
 
     # --- Deudas
-    if paso == "deuda_nombre":
-        esperar(context, "deuda_importe", tipo=espera["tipo"], sentido=espera.get("sentido", "debo"), nombre=escrito[:40])
-        te_deben = espera.get("sentido") == "me_deben"
-        pregunta = {"plazos": "¿Cuánto es <b>cada cuota</b>?",
-                    "fijo": "¿Cuánto pagas <b>cada mes</b>?", "suscripcion": "¿Cuánto cuesta <b>al mes</b>?"
-                    }.get(espera["tipo"], "¿Cuánto te debe?" if te_deben else "¿Cuánto es?")
-        return await enviar(context, f"💳 {e(escrito[:40])}\n{pregunta} (por ejemplo 50 o 49,90)", [CANCELAR])
-    if paso == "deuda_importe":
-        importe = leer_importe(escrito)
-        if not importe:
-            return await repetir(update, "Escribe solo el importe, por ejemplo <b>50</b> o <b>49,90</b>.")
-        datos_deuda = {**{k: v for k, v in espera.items() if k != "paso"}, "importe": importe}
-        tipo = espera["tipo"]
-        te_deben = espera.get("sentido") == "me_deben"
-        if tipo == "plazos":
-            esperar(context, "deuda_cuotas", **datos_deuda)
-            quien = "te quedan por cobrar" if te_deben else "te <b>quedan</b> por pagar"
-            return await enviar(context, f"¿Cuántas cuotas {quien}? (contando la próxima)", [CANCELAR])
-        if tipo in ("fijo", "suscripcion"):
-            esperar(context, "deuda_dia", **datos_deuda)
-            return await enviar(context, "¿Qué <b>día del mes</b> se paga? (1-31)", [CANCELAR])
-        if tipo == "fecha":
-            esperar(context, "deuda_fecha", **datos_deuda)
-            fin = sumar_meses(hoy, 0, 31)
-            pregunta = "¿Qué día te lo tiene que pagar?" if te_deben else "¿Para cuándo?"
-            return await enviar(context, f"📅 {pregunta} Escribe la fecha (ej. <b>20/11</b>) o elige:",
-                                [[("Mañana", f"dnf:{(hoy + timedelta(days=1)).isoformat()}"),
-                                  ("En 1 semana", f"dnf:{(hoy + timedelta(days=7)).isoformat()}")],
-                                 [("A fin de mes", f"dnf:{fin.isoformat()}")], CANCELAR])
-        return await crear_deuda(update, context, datos_deuda)
-    if paso == "deuda_cuotas":
-        cuotas = leer_entero(escrito, 1, 360)
-        if not cuotas:
-            return await repetir(update, "Escribe un número de cuotas, por ejemplo <b>12</b>.")
-        esperar(context, "deuda_dia", **{**{k: v for k, v in espera.items() if k != "paso"}, "cuotas": cuotas})
-        quien = "te paga" if espera.get("sentido") == "me_deben" else "se paga"
-        return await enviar(context, f"📅 ¿Qué <b>día del mes</b> {quien} cada cuota? (1-31)", [CANCELAR])
-    if paso == "deuda_dia":
-        dia = leer_entero(escrito, 1, 31)
-        if not dia:
-            return await repetir(update, "Escribe un día del 1 al 31.")
-        datos_deuda = {**{k: v for k, v in espera.items() if k != "paso"}, "dia": dia}
-        if dia < hoy.day:
-            esperar(context, "deuda_mes", **datos_deuda)
-            pregunta = "¿Ya te pagó la de este mes?" if espera.get("sentido") == "me_deben" else "¿Ya pagaste el de este mes?"
-            return await enviar(context, f"El día {dia} de este mes ya ha pasado. {pregunta}",
-                                [[("✅ Sí", "dnm:siguiente"), ("❌ Aún no", "dnm:este")], CANCELAR])
-        return await crear_deuda(update, context, {**datos_deuda, "desde": f"{hoy:%Y-%m}"})
-    if paso == "deuda_fecha":
-        fecha = leer_fecha(escrito, hoy)
-        if not fecha:
-            return await repetir(update, "Escribe la fecha como <b>20/11</b> o <b>20/11/2026</b>.")
-        return await crear_deuda(update, context, {**espera, "fecha": fecha.isoformat()})
-    if paso == "deuda_parte":
-        importe = leer_importe(escrito)
-        deuda = deudas.obtener(espera["deuda"])
-        if not importe or importe > deuda["importe"]:
-            return await repetir(update, f"Escribe cuánto has pagado (como mucho {euros(deuda['importe'])}).")
-        context.user_data.pop("espera", None)
-        resultado, accion = deudas.pagar(deuda["id"], "unico", importe)
-        return await enviar(context, f"✅ {e(deuda['nombre'])}: {e(resultado)} €.", con_deshacer(accion))
-    if paso == "deuda_aplazar":
-        fecha = leer_fecha(escrito, hoy)
-        if not fecha or fecha <= hoy:
-            return await repetir(update, "Escribe una fecha futura, por ejemplo <b>28/11</b>.")
-        context.user_data.pop("espera", None)
-        resultado = deudas.aplazar(espera["deuda"], espera["periodo"], nueva_fecha=fecha)
-        return await enviar(context, f"📅 {e(deudas.obtener(espera['deuda'])['nombre'])}: {resultado}.")
-    if paso == "deuda_editar":
-        deuda = deudas.obtener(espera["deuda"])
-        campo = espera["campo"]
-        if campo in ("importe", "cuota"):
-            valor = leer_importe(escrito)
-        elif campo == "dia":
-            valor = leer_entero(escrito, 1, 31)
-        elif campo == "fecha":
-            fecha = leer_fecha(escrito, hoy)
-            valor = fecha.isoformat() if fecha else None
-        else:
-            valor = escrito[:40]
-        if not valor:
-            return await repetir(update, "No lo he entendido, prueba otra vez.")
-        context.user_data.pop("espera", None)
-        deudas.cambiar(deuda["id"], campo, valor)
-        await enviar(context, "✅ Cambiado.")
-        return await ver_deuda(update, context, deuda["id"], nuevo=True)
+    if paso.startswith("deuda_") and await bot_deudas.responder(update, context, espera, escrito):
+        return None
 
     # --- Metas
     if paso == "meta_nombre":
@@ -399,6 +322,14 @@ async def responder_pregunta(update, context, espera, escrito):
         return await crear_recordatorio(context, espera, hora)
 
     # --- Ajustes
+    if paso == "aj_dias_sin":
+        dias = sorted({n for n in (leer_entero(x, 1, 31) for x in escrito.replace(" ", "").split(",")) if n})
+        if not dias:
+            return await repetir(update, "Escribe días del 1 al 31 separados por comas, por ejemplo <b>1, 10, 20</b>.")
+        context.user_data.pop("espera", None)
+        config.guardar("DIAS_AVISO_SIN_DIA", ",".join(map(str, dias)))
+        await enviar(context, "✅ Guardado.")
+        return await pantalla_ajustes(update, context, nuevo=True)
     if paso in ("aj_pres", "aj_umbral"):
         importe = 0.0 if escrito.strip() == "0" else leer_importe(escrito)
         if importe is None:
@@ -442,59 +373,8 @@ async def guardar_cobro(update, context, importe, tipo, fecha, movimiento_id=Non
         datos.ejecutar("DELETE FROM pospuestos WHERE clave = 'cobro'")
         if config.aviso_activo("AVISO_RESUMEN_CICLO") and anterior < fecha:
             await enviar(context, analisis.texto_resumen_ciclo_cerrado(anterior, fecha))
-        await enviar(context, analisis.texto_al_cobrar())
-
-
-async def crear_deuda(update, context, d):
-    context.user_data.pop("espera", None)
-    tipo, nombre, importe = d["tipo"], d["nombre"], d["importe"]
-    sentido = d.get("sentido", "debo")
-    hoy = config.ahora().date()
-    if tipo == "plazos":
-        deuda_id, accion = deudas.crear(nombre, tipo, importe * d["cuotas"], cuota=importe, cuotas_total=d["cuotas"],
-                                        dia=d["dia"], desde=d["desde"], sentido=sentido)
-    elif tipo in ("fijo", "suscripcion"):
-        deuda_id, accion = deudas.crear(nombre, tipo, importe, cuota=importe, dia=d["dia"], desde=d["desde"])
-    elif tipo == "fecha":
-        deuda_id, accion = deudas.crear(nombre, tipo, importe, fecha=d["fecha"], sentido=sentido)
-    elif tipo == "cobro":
-        # Se pagará con el próximo salario que registres (a partir de mañana si ya cobraste hoy).
-        deuda_id, accion = deudas.crear(nombre, tipo, importe, desde=(hoy + timedelta(days=1)).isoformat()
-                                        if ciclo.cobrado_este_mes(hoy) else hoy.isoformat())
-    else:
-        deuda_id, accion = deudas.crear(nombre, "sin_fecha", importe, sentido=sentido)
-    deuda = deudas.obtener(deuda_id)
-    logging.info("Apuntado: %s", nombre)
-    recordatorio = ""
-    if deudas.proximo_pago(deuda):
-        recordatorio = f"\n🔔 Te lo recordaré el día de pago a las {config.hora_aviso_pago()}."
-    elif deuda["tipo"] == "sin_fecha":
-        recordatorio = "\n💡 Cuando sepas el día, pónselo (✏️ Día de pago) y te lo recordaré."
-    await enviar(context, f"✅ Apuntado:\n{analisis.linea_deuda(deuda)}{recordatorio}",
-                 con_deshacer(accion, [[("💳 Ver deudas", "m:deudas")]]))
-
-
-async def ver_deuda(update, context, deuda_id, nuevo=False):
-    deuda = deudas.obtener(deuda_id)
-    if not deuda or deuda["activa"] != 1:
-        return await mostrar(update, context, "Esa deuda ya no está activa.", [[("⬅️ Deudas", "m:deudas")]], nuevo)
-    proximo = deudas.proximo_pago(deuda)
-    per = proximo[1] if proximo else "unico"
-    te_deben = deudas.me_deben(deuda)
-    filas = [[("✅ Me ha pagado" if te_deben else "✅ Pagado", f"dp:{deuda_id}:{per}")]]
-    if deuda["tipo"] == "sin_fecha":
-        filas[0].append(("📅 Poner día de pago", f"de:{deuda_id}:fecha"))
-    else:
-        filas[0].append(("📅 Aplazar", f"da:{deuda_id}:{per}"))
-    if deuda["tipo"] in deudas.UNICOS:
-        filas.append([("💸 Me pagó una parte" if te_deben else "💸 Pagué una parte", f"dparte:{deuda_id}")])
-    campos = {"plazos": [("✏️ Cuota", "cuota"), ("✏️ Día", "dia")],
-              "fijo": [("✏️ Importe", "importe"), ("✏️ Día", "dia")],
-              "suscripcion": [("✏️ Importe", "importe"), ("✏️ Día", "dia")],
-              "fecha": [("✏️ Importe", "importe"), ("✏️ Día de pago", "fecha")]}.get(deuda["tipo"], [("✏️ Importe", "importe")])
-    filas.append([(t, f"de:{deuda_id}:{c}") for t, c in campos] + [("✏️ Nombre", f"de:{deuda_id}:nombre")])
-    filas.append([("🗑️ Borrar", f"dbo:{deuda_id}"), ("⬅️ Deudas", "m:deudas")])
-    await mostrar(update, context, analisis.texto_deuda(deuda), filas, nuevo)
+        await enviar(context, analisis.texto_al_cobrar(),
+                     [[("✅ Marcar lo que ya has pagado", "d:pagar")]] if deudas.pendientes() else None)
 
 
 async def crear_meta(update, context, espera, uid, inicial=0.0):
@@ -554,6 +434,9 @@ async def atender_boton(update, context, dato):  # noqa: C901  (enrutador de bot
     hoy = config.ahora().date()
 
     if dato == "nada":
+        return None
+    if dato == "borrar":
+        await update.callback_query.message.delete()
         return None
     if dato == "cancelar":
         context.user_data.pop("espera", None)
@@ -672,116 +555,8 @@ async def atender_boton(update, context, dato):  # noqa: C901  (enrutador de bot
         return None
 
     # --- Deudas
-    if clave == "d":
-        if partes[1] == "nueva" and len(partes) == 2:
-            await mostrar(update, context, "💳 ¿Qué quieres apuntar?",
-                          [[("💸 Lo que YO debo", "d:nueva:debo")], [("🤝 Lo que ME DEBEN", "d:nueva:me_deben")], CANCELAR])
-        elif partes[1] == "nueva":
-            sentido = partes[2]
-            explicaciones = {
-                "fecha": "una cantidad con día de pago", "cobro": "la pagarás en cuanto cobres",
-                "plazos": "cuotas mensuales con día de pago", "fijo": "alquiler, gimnasio... cada mes",
-                "suscripcion": "Netflix, Spotify... cada mes", "sin_fecha": "aún no sabes el día (lo pones después)"}
-            filas = [[(deudas.TIPOS[t], f"dn:{t}:{sentido}")] for t in deudas.TIPOS_POR_SENTIDO[sentido]]
-            titulo = "🤝 <b>Lo que te deben</b>" if sentido == "me_deben" else "💸 <b>Lo que debes</b>"
-            texto_tipos = "\n".join(f"• <b>{deudas.TIPOS[t].split(' ', 1)[1]}</b>: {explicaciones[t]}"
-                                    for t in deudas.TIPOS_POR_SENTIDO[sentido])
-            await mostrar(update, context, f"{titulo}\n{texto_tipos}", filas + [CANCELAR])
-        elif partes[1] == "ver":
-            await ver_deuda(update, context, int(partes[2]))
-        elif partes[1] == "pagar":
-            items = deudas.pendientes() + deudas.por_cobrar()
-            filas = [[(f"{'🤝 ' if deudas.me_deben(i['deuda']) else ''}{i['deuda']['nombre'][:18]} "
-                       f"{euros_cortos(i['importe'])} ({fecha_corta(i['vence'])})",
-                       f"dp:{i['deuda']['id']}:{i['periodo']}")] for i in items]
-            texto = ("✅ ¿Qué has pagado (o qué te han pagado 🤝)?" if items
-                     else "No hay pagos pendientes en este ciclo ✅")
-            await mostrar(update, context, texto, filas + [[("⬅️ Deudas", "m:deudas")]])
-        return None
-    if clave == "dn":
-        sentido = partes[2] if len(partes) > 2 else "debo"
-        esperar(context, "deuda_nombre", tipo=partes[1], sentido=sentido)
-        if sentido == "me_deben":
-            pregunta, ejemplo = "¿Quién te lo debe?", {"fecha": "Pedro", "plazos": "Laura"}.get(partes[1], "Marcos")
-        else:
-            pregunta = "¿Qué nombre le pongo?"
-            ejemplo = {"fecha": "Juan", "cobro": "Mamá", "plazos": "Móvil", "fijo": "Alquiler",
-                       "suscripcion": "Netflix"}.get(partes[1], "Deuda")
-        await mostrar(update, context, f"{deudas.TIPOS[partes[1]]}\n{pregunta} (ej. <b>{ejemplo}</b>)", [CANCELAR])
-        return None
-    if clave == "dnf":
-        espera = context.user_data.get("espera") or {}
-        if espera.get("paso") != "deuda_fecha":
-            return "Empieza otra vez"
-        await crear_deuda(update, context, {**espera, "fecha": partes[1]})
-        return None
-    if clave == "dnm":
-        espera = context.user_data.get("espera") or {}
-        if espera.get("paso") != "deuda_mes":
-            return "Empieza otra vez"
-        mes = hoy if partes[1] == "este" else sumar_meses(hoy, 1, 1)
-        await crear_deuda(update, context, {**espera, "desde": f"{mes:%Y-%m}"})
-        return None
-    if clave == "dp":
-        deuda = deudas.obtener(int(partes[1]))
-        if not deuda or deuda["activa"] != 1:
-            return "Ya estaba marcada"
-        per = ":".join(partes[2:])
-        if per != "unico" and per in deudas.periodos_pagados(deuda["id"]):
-            return "Esa cuota ya estaba pagada"
-        resultado, accion = deudas.pagar(deuda["id"], per)
-        logging.info("%s: %s", "Cobro marcado" if deudas.me_deben(deuda) else "Pago marcado", deuda["nombre"])
-        await mostrar(update, context, f"✅ {e(deuda['nombre'])}: {e(resultado)}.", con_deshacer(accion))
-        return "Hecho"
-    if clave == "dm":
-        horas, minutos = (int(x) for x in config.hora_aviso_pago().split(":"))
-        manana = datetime.combine(hoy + timedelta(days=1), time(horas, minutos), tzinfo=config.zona())
-        datos.posponer(f"deuda:{partes[1]}:{':'.join(partes[2:])}", manana)
-        await mostrar(update, context, f"⏰ Te lo recuerdo mañana a las {config.hora_aviso_pago()}.")
-        return None
-    if clave == "da":
-        deuda = deudas.obtener(int(partes[1]))
-        per = ":".join(partes[2:])
-        filas = [[("+3 días", f"dap:{deuda['id']}:3:{per}"), ("+1 semana", f"dap:{deuda['id']}:7:{per}")]]
-        if not deudas.me_deben(deuda):
-            filas.append([("💶 Al próximo cobro", f"dap:{deuda['id']}:cobro:{per}")])
-        filas += [[("✍️ Otra fecha", f"dap:{deuda['id']}:otra:{per}")], CANCELAR]
-        await mostrar(update, context, f"📅 ¿Cuál es el nuevo día de pago de «{e(deuda['nombre'])}»?\n"
-                                       f"<i>Te lo recordaré ese día a las {config.hora_aviso_pago()}.</i>", filas)
-        return None
-    if clave == "dap":
-        deuda_id, opcion, per = int(partes[1]), partes[2], ":".join(partes[3:])
-        if opcion == "otra":
-            esperar(context, "deuda_aplazar", deuda=deuda_id, periodo=per)
-            await mostrar(update, context, "Escribe la nueva fecha (ej. <b>28/11</b>):", [CANCELAR])
-            return None
-        if opcion == "cobro":
-            resultado = deudas.aplazar(deuda_id, per, al_cobro=True)
-        else:
-            resultado = deudas.aplazar(deuda_id, per, nueva_fecha=hoy + timedelta(days=int(opcion)))
-        await mostrar(update, context, f"📅 {e(deudas.obtener(deuda_id)['nombre'])}: {resultado}.")
-        return None
-    if clave == "dparte":
-        esperar(context, "deuda_parte", deuda=int(partes[1]))
-        te_deben = deudas.me_deben(deudas.obtener(int(partes[1])))
-        await mostrar(update, context, "💸 ¿Cuánto te ha pagado?" if te_deben else "💸 ¿Cuánto has pagado?",
-                      [CANCELAR], nuevo=True)
-        return None
-    if clave == "de":
-        esperar(context, "deuda_editar", deuda=int(partes[1]), campo=partes[2])
-        pregunta = {"importe": "el nuevo importe", "cuota": "la nueva cuota", "dia": "el nuevo día del mes (1-31)",
-                    "fecha": "la nueva fecha (ej. 20/11)", "nombre": "el nuevo nombre"}[partes[2]]
-        await mostrar(update, context, f"✏️ Escribe {pregunta}:", [CANCELAR], nuevo=True)
-        return None
-    if clave == "dbo":
-        deuda = deudas.obtener(int(partes[1]))
-        await mostrar(update, context, f"🗑️ ¿Borrar «{e(deuda['nombre'])}»?",
-                      [[("Sí, borrar", f"dbos:{deuda['id']}"), ("No", f"d:ver:{deuda['id']}")]])
-        return None
-    if clave == "dbos":
-        accion = deudas.borrar(int(partes[1]))
-        await mostrar(update, context, "🗑️ Borrada.", con_deshacer(accion, [[("💳 Ver deudas", "m:deudas")]]))
-        return None
+    if clave in bot_deudas.PREFIJOS:
+        return await bot_deudas.boton(update, context, partes)
 
     # --- Metas
     if clave == "g":
@@ -893,20 +668,32 @@ async def atender_ajuste(update, context, partes):
         logging.info("Hora de actualización cambiada a %s:%s", partes[2], partes[3])
         await pantalla_ajustes(update, context)
         return f"Actualización a las {partes[2]}:{partes[3]}"
-    elif opcion == "hp":
-        filas = [[(f"{h:02d}:00", f"aj:hph:{h:02d}") for h in range(fila, fila + 6)] for fila in range(0, 24, 6)]
-        await mostrar(update, context, "🔔 ¿A qué hora te recuerdo los pagos el día que tocan?\n"
-                                       "(lo que debes, lo que te deben, lo aplazado y las suscripciones)",
-                      filas + [[("⬅️ Ajustes", "m:ajustes")]])
-    elif opcion == "hph":
-        await mostrar(update, context, f"🔔 Elige los minutos ({partes[2]}:..):",
-                      [[(f"{partes[2]}:{m}", f"aj:hpm:{partes[2]}:{m}") for m in ("00", "15", "30", "45")],
-                       [("⬅️ Volver", "aj:hp")]])
-    elif opcion == "hpm":
-        config.guardar("HORA_AVISO_PAGO", f"{partes[2]}:{partes[3]}")
-        logging.info("Hora de los recordatorios de pago: %s:%s", partes[2], partes[3])
+    elif opcion == "fr":
+        filas = [[(f"{h:02d}:00", f"aj:fd:{h:02d}") for h in range(fila, fila + 4)] for fila in range(6, 22, 4)]
+        await mostrar(update, context, "🔔 Los recordatorios de deudas se reparten en una franja del día.\n"
+                                       "¿Desde qué hora?", filas + [[("⬅️ Ajustes", "m:ajustes")]])
+    elif opcion == "fd":
+        desde = int(partes[2])
+        filas = [[(f"{h:02d}:00", f"aj:fh:{desde:02d}:{h:02d}") for h in range(fila, min(fila + 4, 24))]
+                 for fila in range(desde + 1, 24, 4)]
+        await mostrar(update, context, f"🔔 Desde las {desde:02d}:00. ¿Hasta qué hora?", filas + [[("⬅️ Volver", "aj:fr")]])
+    elif opcion == "fh":
+        config.guardar("FRANJA_DEUDAS_DESDE", f"{partes[2]}:00")
+        config.guardar("FRANJA_DEUDAS_HASTA", f"{partes[3]}:00")
+        logging.info("Franja de recordatorios de deudas: %s:00–%s:00", partes[2], partes[3])
         await pantalla_ajustes(update, context)
-        return f"Recordatorios de pago a las {partes[2]}:{partes[3]}"
+        return f"Recordatorios entre las {partes[2]}:00 y las {partes[3]}:00"
+    elif opcion == "ds":
+        esperar(context, "aj_dias_sin")
+        await mostrar(update, context, "🤝 Para lo que te deben <b>sin día fijo</b>, ¿qué días del mes te pregunto si te han pagado?\n"
+                                       "Elige o escribe los días separados por comas (ej. <b>1, 10, 20</b>):",
+                      [[("5 · 15 · 25", "aj:dsp:5,15,25"), ("1 · 10 · 20", "aj:dsp:1,10,20")],
+                       [("10 · 20 · 30", "aj:dsp:10,20,30"), ("1 · 15", "aj:dsp:1,15")], CANCELAR], nuevo=True)
+    elif opcion == "dsp":
+        context.user_data.pop("espera", None)
+        config.guardar("DIAS_AVISO_SIN_DIA", partes[2])
+        await pantalla_ajustes(update, context)
+        return f"Días {partes[2].replace(',', ', ')}"
     elif opcion == "cobro":
         filas = [[(str(n), f"aj:cd:{n}") for n in range(i, i + 5)] for i in (1, 6, 11, 16, 21)]
         await mostrar(update, context, "💶 ¿Desde qué día del mes sueles cobrar? (el más pronto)",

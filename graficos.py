@@ -87,3 +87,20 @@ def categorias(lista, titulo):
     eje.tick_params(axis="y", labelsize=10, colors=TEXTO)
     eje.set_title(titulo, loc="left", color=TEXTO, fontsize=12, fontweight="bold", pad=12)
     return _png(figura)
+
+
+def barras_meses(etiquetas, valores, titulo):
+    """Barras verticales por mes (p. ej. deuda pendiente al final de cada mes)."""
+    figura, eje = _lienzo()
+    posiciones = range(len(valores))
+    eje.bar(posiciones, valores, width=0.6, color=SERIE, edgecolor=SUPERFICIE, linewidth=2)
+    maximo = max(valores) if valores else 1
+    for x, v in zip(posiciones, valores):
+        if v > 0:
+            eje.text(x, v + maximo * 0.02, euros_enteros(v), ha="center", va="bottom", color=TEXTO, fontsize=8)
+    eje.set_xticks(list(posiciones))
+    eje.set_xticklabels(etiquetas, rotation=0 if len(etiquetas) <= 8 else 45, ha="center" if len(etiquetas) <= 8 else "right")
+    eje.yaxis.set_visible(False)
+    eje.set_ylim(0, maximo * 1.15)
+    eje.set_title(titulo, loc="left", color=TEXTO, fontsize=12, fontweight="bold", pad=12)
+    return _png(figura)

@@ -5,7 +5,7 @@ Bot de Telegram de finanzas personales para Windows. El usuario NO programa: ins
 último `INSTALAR.bat` de la rama `claude/sweet-thompson-41bsdc` y lo ejecuta con `--actualizar`.
 Toda actualización debe funcionar con ese doble clic, sin que el usuario toque nada.
 
-## Funcionalidad (v5 + v6)
+## Funcionalidad (v5 + v6 + v7)
 
 - El banco se consulta UNA vez al día (`actualizacion.py`, hora `HORA_SALDO_DIARIO`, 00:00 por
   defecto) o con «🔄 Actualizar ahora» (Ajustes, con confirmación). Descarga saldos y movimientos
@@ -28,10 +28,22 @@ Toda actualización debe funcionar con ese doble clic, sin que el usuario toque 
 - v6 · Deudas con `sentido` («debo» / «me_deben»; columna añadida en `datos.migrar`). Tipos por sentido
   en `deudas.TIPOS_POR_SENTIDO`: debo = fecha, cobro, plazos, fijo, suscripcion; me_deben = fecha,
   plazos, sin_fecha. Lo que te deben NUNCA se suma al saldo neto (se muestra aparte).
-- v6 · Recordatorio el día de pago a `HORA_AVISO_PAGO` (00:00 por defecto, configurable en Ajustes) para
-  todo lo que tiene día de pago (debo, me deben, aplazado, suscripciones), y cada día si se atrasa; si el
-  PC estaba apagado, llega al encenderlo ese día. Es la excepción pedida a «nada a las 00:00»: la
-  actualización con el banco y el saldo siguen siendo silenciosos.
+- v6 · Recordatorio el día de pago para todo lo que tiene día de pago (debo, me deben, aplazado,
+  suscripciones), y cada día si se atrasa (desde la v7, en la franja de deudas; ver abajo).
+- v7 · Deudas a plazos llevadas por lo que QUEDA (total − pagos; `deudas.restante`): se crean con total
+  + cuota fija o total + nº de cuotas, y lo ya pagado (pago con periodo «inicial»). «Otra cantidad» cubre
+  el periodo y la diferencia va al final. `modo`: dia (día fijo, periodo AAAA-MM), cobro (cada salario,
+  periodo = fecha del salario), sin (sin día fijo, solo «me_deben»). Una cuota no pagada en su periodo
+  NUNCA cuenta como pagada: tabla `saltos` con «pasar» (todo el plan se retrasa) o «juntas» (se paga con
+  la siguiente); `si_no_paga` por deuda: preguntar (por defecto) / pasar / juntas.
+- v7 · «cobro» = pago único al cobrar (una vez); «fijo» con modo cobro = gasto fijo en cada cobro.
+- v7 · Recordatorios de deudas repartidos en `FRANJA_DEUDAS_DESDE`–`HASTA` (08:00–14:00), por prioridad;
+  sustituyen a `HORA_AVISO_PAGO` (clave conservada, sin uso). NADA se da por pagado: cada recordatorio
+  pide confirmación, «🙈 Ignorar» lo repite al día siguiente, el día del cobro van en «¡Cobrado!» y desde
+  el día siguiente uno a uno. La detección en el banco PREGUNTA («¿Es el pago de X?»), no marca.
+  Lo que te deben sin día fijo: preguntas los días `DIAS_AVISO_SIN_DIA` (5,15,25).
+- v7 · Interfaz de deudas en `bot_deudas.py` (bot.py le delega pasos «deuda_*» y prefijos de PREFIJOS);
+  análisis de deudas en `analisis_deudas.py` (semáforo % salario comprometido: <30 % / 30–40 % / >40 %).
 - El banco solo se consulta en: actualización diaria, su recuperación si el PC estaba apagado,
   «Actualizar ahora» y tras renovar el permiso (si ese día no había datos). El usuario pidió dejarlo así.
 
@@ -50,7 +62,8 @@ Toda actualización debe funcionar con ese doble clic, sin que el usuario toque 
 - Nunca renombres ni elimines claves del `.env` (`TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID`, `EB_APP_ID`,
   `EB_KEY_PATH`, `EB_SESSION_ID`, `EB_COUNTRY`, `EB_REDIRECT_URL`, `ZONA_HORARIA`,
   `LIMITE_CONSULTAS_DIA`, `HORA_SALDO_DIARIO`, `SALDO_DIARIO_ACTIVO`, `DIA_COBRO_DESDE`, `DIA_COBRO_HASTA`,
-  `PRESUPUESTO_CICLO`, `UMBRAL_SALDO_BAJO`, `HORA_AVISO_PAGO`, `AVISO_*`).
+  `PRESUPUESTO_CICLO`, `UMBRAL_SALDO_BAJO`, `HORA_AVISO_PAGO`, `FRANJA_DEUDAS_DESDE`, `FRANJA_DEUDAS_HASTA`,
+  `DIAS_AVISO_SIN_DIA`, `AVISO_*`).
   Una clave nueva debe tener valor por defecto (`config.POR_DEFECTO`) o pedirse solo si falta.
 - La actualización copia los archivos del repositorio encima de `%LOCALAPPDATA%\FinanzasBot` con
   robocopy y borra una lista fija de archivos obsoletos (en `INSTALAR.bat`). Los archivos que genera

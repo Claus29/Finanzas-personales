@@ -82,6 +82,12 @@ def migrar(con):
         con.execute("ALTER TABLE deudas ADD COLUMN sentido TEXT NOT NULL DEFAULT 'debo'")
     # Las «me deben» de la v5 (solo nombre e importe) pasan a «me deben, sin fecha».
     con.execute("UPDATE deudas SET sentido = 'me_deben', tipo = 'sin_fecha' WHERE tipo = 'me_deben'")
+    if "modo" not in columnas:  # v7: cuándo se paga cada cuota (día fijo, al cobrar o sin día fijo)
+        con.execute("ALTER TABLE deudas ADD COLUMN modo TEXT NOT NULL DEFAULT 'dia'")
+    if "si_no_paga" not in columnas:  # v7: qué hacer con una cuota no pagada en su mes
+        con.execute("ALTER TABLE deudas ADD COLUMN si_no_paga TEXT NOT NULL DEFAULT 'preguntar'")
+    con.execute("CREATE TABLE IF NOT EXISTS saltos (deuda_id INTEGER NOT NULL, periodo TEXT NOT NULL, "
+                "decision TEXT NOT NULL, fecha TEXT NOT NULL, PRIMARY KEY (deuda_id, periodo))")
 
 
 def todos(sql, *parametros):

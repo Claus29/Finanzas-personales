@@ -5,7 +5,7 @@ ordenador estaba apagado, en cuanto vuelve. Además se puede forzar desde Ajuste
 ahora»). Nunca envía notificaciones: lo que descubre de madrugada se avisa a partir de las 09:00.
 """
 import logging
-from datetime import date, timedelta
+from datetime import date
 
 import requests
 
@@ -103,32 +103,37 @@ def actualizar():
 
 
 def pagos_detectados(nuevos):
-    """Reconoce en los movimientos nuevos los pagos apuntados (±5 días del día de pago, mismo importe).
+    """Busca en los movimientos nuevos los pagos apuntados (±5 días, mismo importe) y PREGUNTA.
 
-    - Un cargo igual a una cuota, pago fijo o suscripción tuya -> se marca como pagado.
-    - Un ingreso igual a lo que te deben (cuota o pago con día) -> se marca como cobrado.
-    Se avisa a partir de las 09:00 con un botón para deshacerlo. Devuelve los ids de esos movimientos.
+    Nunca se marca nada como pagado sin tu confirmación: se envía (en la franja de recordatorios de
+    deudas) «¿Es el pago de X?» con [Sí, márcalo] [No]. Devuelve los ids de esos movimientos.
     """
     usados = set()
     cargos = [m for m in nuevos if m["importe"] < 0]
     abonos = [m for m in nuevos if m["importe"] > 0]
-    candidatos = [(i, cargos) for i in deudas.pendientes(sentido="debo") if i["deuda"]["tipo"] in deudas.MENSUALES]
-    candidatos += [(i, abonos) for i in deudas.por_cobrar() if i["deuda"]["tipo"] in ("fecha", "plazos")]
+    candidatos = [(i, cargos) for i in deudas.pendientes(sentido="debo")]
+    candidatos += [(i, abonos) for i in deudas.por_cobrar()]
+    (horas, minutos), _ = config.franja_deudas()
+    ahora = config.ahora()
+    desde = max(ahora, ahora.replace(hour=horas, minute=minutos, second=0, microsecond=0))
     for item, lista in candidatos:
         for m in lista:
             if m["id"] in usados:
                 continue
             cerca = abs((date.fromisoformat(m["fecha"]) - item["vence"]).days) <= 5
             if cerca and abs(abs(m["importe"]) - item["importe"]) <= 0.5:
-                _, accion = deudas.pagar(item["deuda"]["id"], item["periodo"])
                 usados.add(m["id"])
+                deuda = item["deuda"]
+                quien = m["contraparte"] or m["descripcion"] or "—"
                 cuando = f"{m['fecha'][8:10]}/{m['fecha'][5:7]}"
-                if deudas.me_deben(item["deuda"]):
-                    texto = (f"🤝 He visto que <b>{item['deuda']['nombre']}</b> te ha pagado {euros(item['importe'])} "
-                             f"({cuando}) y lo he marcado como cobrado.")
+                if deudas.me_deben(deuda):
+                    texto = (f"💡 He visto un ingreso de {euros(abs(m['importe']))} de {quien} ({cuando}).\n"
+                             f"¿Es lo que te debía <b>{deuda['nombre']}</b>?")
+                    si = "✅ Sí, me ha pagado"
                 else:
-                    texto = (f"✅ He visto el pago de <b>{item['deuda']['nombre']}</b> ({euros(item['importe'])}, "
-                             f"{cuando}) y lo he marcado como pagado.")
-                datos.encolar_aviso(texto, [[["↩️ No era ese pago", f"desl:{accion}"]]])
+                    texto = (f"💡 He visto un cargo de {euros(abs(m['importe']))} a {quien} ({cuando}).\n"
+                             f"¿Es el pago de <b>{deuda['nombre']}</b>?")
+                    si = "✅ Sí, márcalo pagado"
+                datos.encolar_aviso(texto, [[[si, f"dp:{deuda['id']}:{item['periodo']}"], ["❌ No", "borrar"]]], desde=desde)
                 break
     return usados

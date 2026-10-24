@@ -11,7 +11,7 @@ así que pulsar botones nunca gasta consultas. Tu saldo es la suma de tus cuenta
 |---|---|
 | 💰 **Saldo** | Total y desglose por cuenta, **saldo neto** (saldo − lo que te toca pagar este ciclo; de las deudas a plazos solo la cuota) y cuánto puedes gastar al día hasta el cobro. Registrar cobro. Últimos movimientos. |
 | 📊 **Análisis** | Ciclo actual (ingresos, gasto, proyección, tasa de ahorro, comparación), presupuesto con semáforo, categorías (gráfico), evolución del saldo (gráfico), semana, suscripciones detectadas (apúntalas con un toque) y corregir categorías. |
-| 💳 **Deudas** | **Lo que debes** (pago único con día de pago, «al cobrar», a plazos, fijo mensual, suscripción) y **lo que te deben** (con día de pago, a plazos o sin fecha). Recordatorio el día de pago a las 00:00 (configurable) y cada día si se atrasa; marcar pagado (o parte), aplazar. Lo que te deben no se suma al saldo neto. Si el banco muestra el cargo o el ingreso, se marca solo. |
+| 💳 **Deudas** | **Lo que debes** (pago único con fecha, pago único al cobrar, a plazos, gasto fijo, suscripción) y **lo que te deben** (con día de pago, a plazos o sin fecha). A plazos: pones el **total** y la cuota (o el nº de cuotas) y lo ya pagado; cada cuota un día fijo, **al cobrar** o (si te deben) sin día fijo. «Otra cantidad» recalcula las cuotas. Si una cuota no se paga: pasarla al mes siguiente o pagar las dos juntas (nunca cuenta como pagada). Recordatorios entre las 08:00 y las 14:00 que piden confirmación y se repiten hasta que la des. Lo que te deben no se suma al saldo neto. **Análisis de deudas** con % del salario comprometido, libre de deudas en…, calendario, puntualidad y gráfico. |
 | 🎯 **Metas** | Metas de ahorro con barra de progreso, cuánto ahorrar al mes y si vas bien. Manuales o vinculadas a una cuenta (p. ej. un Espacio). |
 | ⏰ **Recordatorios** | El del cobro insiste hasta que registres el salario (y propone la nómina si la ve en el banco). Recordatorios propios: una vez, diario, semanal o mensual. |
 | ⚙️ **Ajustes** | Límite de consultas, hora de actualización, días de cobro, presupuesto, aviso de saldo bajo, avisos on/off, «Actualizar ahora», exportar a Excel. |
@@ -48,6 +48,7 @@ recordatorios), con una copia de seguridad diaria en `copias\` (14 días), y el 
 | `actualizacion.py` | La única consulta diaria al banco (saldos y movimientos) |
 | `analisis.py`, `graficos.py` | Métricas y gráficos |
 | `deudas.py`, `metas.py`, `ciclo.py`, `movimientos.py` | Lógica de deudas, metas, ciclo de cobro y gastos |
+| `bot_deudas.py`, `analisis_deudas.py` | Interfaz y análisis de deudas |
 | `avisos.py` | Recordatorios y avisos (nunca a las 00:00) |
 | `datos.py`, `exportar.py` | Base de datos local, copias y Excel |
 | `autenticacion.py`, `configurar.py`, `banco.py`, `consultas.py`, `contador.py` | N26, configuración y límite de consultas |

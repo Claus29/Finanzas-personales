@@ -99,58 +99,137 @@ def _cobro(d, ahora, anadir):
 
 
 def _deudas(d, ahora, anadir):
-    """Recordatorio el día de pago (a HORA_AVISO_PAGO, 00:00 por defecto) y cada día si se atrasa.
+    """Recordatorios de deudas del día, repartidos en la franja FRANJA_DEUDAS (08:00–14:00).
 
-    Para lo que debes, además, un aviso unos días antes (a las 10:00). Si el ordenador estaba apagado
-    a la hora del recordatorio, se envía en cuanto se encienda ese mismo día.
+    Nunca se da nada por pagado: cada recordatorio pide confirmación y, si no se confirma (o se pulsa
+    «Ignorar»), vuelve al día siguiente. Orden: decisiones de cuotas no pagadas, atrasados, los de hoy,
+    los de «dentro de 2 días» y las preguntas de lo que te deben sin día fijo. Si el ordenador estaba
+    apagado, los que falten se envían al encenderlo ese mismo día.
     """
-    hora_pago = _momento(d, config.hora_aviso_pago())
-    items = []
-    if config.aviso_activo("AVISO_DEUDAS"):
-        items += deudas.pendientes(d, "debo")
-    if config.aviso_activo("AVISO_ME_DEBEN"):
-        items += deudas.pendientes(d, "me_deben")
-    for item in items:
+    candidatos = []  # (prioridad, clave, texto, botones)
+    sentidos = [s for s, clave in (("debo", "AVISO_DEUDAS"), ("me_deben", "AVISO_ME_DEBEN")) if config.aviso_activo(clave)]
+    decididos = set()
+
+    # 1) Cuotas a plazos cuyo mes (o ciclo de cobro) terminó sin pagar: ¿qué hacemos?
+    for deuda in [x for x in deudas.activas() if x["sentido"] in sentidos and x["tipo"] == "plazos"]:
+        for item in deudas.periodos_sin_pagar_cerrados(deuda, d):
+            per = item["periodo"]
+            if datos.enviado(f"espera:{deuda['id']}:{per}"):
+                continue  # «aún puede pagarla»: sigue como atrasada normal
+            decididos.add((deuda["id"], per))
+            if deuda["si_no_paga"] in ("pasar", "juntas"):
+                texto, accion = deudas.saltar(deuda["id"], per, deuda["si_no_paga"])
+                quien = analisis.e(deuda["nombre"])
+                datos.encolar_aviso(f"⚠️ <b>{quien}</b>: la cuota de {deudas.nombre_periodo(per)} "
+                                    f"({euros(item['importe'])}) no se pagó.\nComo tienes configurado, {texto}. "
+                                    "<i>No cuenta como pagada.</i>", [[["↩️ Deshacer", f"desl:{accion}"]]],
+                                    desde=max(ahora, _momento(d, "%02d:%02d" % config.franja_deudas()[0])))
+                continue
+            candidatos.append((0, f"saltar:{deuda['id']}:{per}:{d}", texto_salto(deuda, item), botones_salto(deuda, per)))
+
+    # 2) Pagos de hoy o atrasados, y avisos previos
+    for item in [i for sentido in sentidos for i in deudas.pendientes(d, sentido)]:
         deuda, per, vence = item["deuda"], item["periodo"], item["vence"]
-        base = f"deuda:{deuda['id']}:{per}"
-        if pospuesto(base, ahora):
+        if (deuda["id"], per) in decididos or pospuesto(f"deuda:{deuda['id']}:{per}", ahora):
             continue
-        if d >= vence and ahora >= hora_pago:
-            anadir(f"pago:{deuda['id']}:{per}:{d}", texto_pago(item, d), botones_pago(deuda, per))
-        elif (not deudas.me_deben(deuda) and d == vence - timedelta(days=deuda["avisar_dias"])
-              and en_franja(HORA_AVISOS, ahora)):
-            anadir(f"{base}:{d}:antes", f"🔔 Dentro de {deuda['avisar_dias']} días ({fecha_corta(vence)}): "
-                                        f"<b>{analisis.e(deuda['nombre'])}</b>{_cuota(deuda, per)} · {euros(item['importe'])}",
-                   botones_pago(deuda, per))
+        sin_dia = deudas.modo(deuda) == "sin" and deuda["tipo"] in deudas.MENSUALES
+        if sin_dia and not item["atrasada"]:
+            if d.day in config.dias_aviso_sin_dia() or d == vence:
+                candidatos.append((4, f"sin:{deuda['id']}:{per}:{d}", texto_sin_dia(item), botones_pago(deuda, per)))
+            continue
+        if d >= vence:
+            if _al_cobrar(deuda) and vence == d:
+                continue  # el día del cobro va en el mensaje «¡Cobrado!»; desde mañana, un recordatorio por pago
+            prioridad = 1 if d > vence else 2
+            candidatos.append((prioridad, f"pago:{deuda['id']}:{per}:{d}", texto_pago(item, d), botones_pago(deuda, per)))
+        elif not deudas.me_deben(deuda) and d == vence - timedelta(days=deuda["avisar_dias"]):
+            candidatos.append((3, f"antes:{deuda['id']}:{per}:{d}",
+                               f"🔔 Dentro de {deuda['avisar_dias']} días ({fecha_corta(vence)}): "
+                               f"<b>{analisis.e(deuda['nombre'])}</b>{_cuota(deuda, item)} · {euros(item['importe'])}",
+                               botones_pago(deuda, per)))
+
+    # 3) Reparto en la franja: el i-ésimo aviso del día sale a desde + i·(duración/n)
+    candidatos.sort(key=lambda c: (c[0], c[1]))
+    (h1, m1), (h2, m2) = config.franja_deudas()
+    inicio = _momento(d, f"{h1:02d}:{m1:02d}")
+    duracion = _momento(d, f"{h2:02d}:{m2:02d}") - inicio
+    for n, (_, clave, texto, botones) in enumerate(candidatos):
+        if ahora >= inicio + duracion * n / len(candidatos):
+            anadir(clave, texto, botones)
 
 
-def _cuota(deuda, per):
+def _al_cobrar(deuda):
+    return deuda["tipo"] == "cobro" or (deuda["tipo"] in deudas.MENSUALES and deudas.modo(deuda) == "cobro")
+
+
+def _cuota(deuda, item):
     if deuda["tipo"] != "plazos":
         return ""
-    return f" (cuota {deudas.periodos(deuda).index(per) + 1}/{deuda['cuotas_total']})"
+    numero, total = deudas.numero_cuota(deuda)
+    juntas = f", incluye {item['juntas']} cuotas" if item.get("juntas", 1) > 1 else ""
+    return f" (cuota {numero}/{total}{juntas})"
 
 
 def texto_pago(item, d):
     deuda, per, vence = item["deuda"], item["periodo"], item["vence"]
-    nombre = f"<b>{analisis.e(deuda['nombre'])}</b>{_cuota(deuda, per)}"
+    nombre = f"<b>{analisis.e(deuda['nombre'])}</b>{_cuota(deuda, item)}"
     importe = f"<b>{euros(item['importe'])}</b>"
-    atraso = f"\n⚠️ Era el {fecha_corta(vence)}: va con retraso." if d > vence else ""
     if deudas.me_deben(deuda):
-        return f"🤝 Hoy {nombre} te tiene que pagar {importe}.{atraso}"
+        if d > vence:
+            return f"🤝 {nombre} te tenía que pagar {importe} el {fecha_corta(vence)}.\n¿Te ha pagado ya?"
+        return f"🤝 Hoy {nombre} te tiene que pagar {importe}.\n¿Te ha pagado?"
+    if d > vence and _al_cobrar(deuda):
+        return f"💶 Desde que cobraste el {fecha_corta(vence)} tienes pendiente: {nombre} · {importe}.\n¿Ya lo pagaste?"
+    if d > vence:
+        return f"⚠️ Pendiente desde el {fecha_corta(vence)}: {nombre} · {importe}.\n¿Ya lo pagaste?"
     if deuda["tipo"] == "suscripcion":
-        return f"📺 Hoy se cobra {nombre}: {importe}.{atraso}"
+        return f"📺 Hoy se cobra {nombre}: {importe}.\n¿Confirmas que está pagada?"
     if deudas.aplazada(deuda, per):
-        return f"📅 Hoy vence lo que aplazaste: {nombre} · {importe}.{atraso}"
-    return f"💳 Hoy toca pagar {nombre} · {importe}.{atraso}"
+        return f"📅 Hoy vence lo que aplazaste: {nombre} · {importe}.\n¿Ya lo pagaste?"
+    return f"💳 Hoy toca pagar {nombre} · {importe}.\n¿Ya lo pagaste?"
+
+
+def texto_sin_dia(item):
+    deuda = item["deuda"]
+    return (f"🤝 ¿Te ha pagado <b>{analisis.e(deuda['nombre'])}</b> la cuota de {deudas.nombre_periodo(item['periodo'])}"
+            f"{_cuota(deuda, item)}? · {euros(item['importe'])}")
+
+
+def texto_salto(deuda, item):
+    quien = analisis.e(deuda["nombre"])
+    mes = deudas.nombre_periodo(item["periodo"])
+    if deudas.me_deben(deuda):
+        cabecera = f"⚠️ <b>{quien}</b> no te ha pagado la cuota de {mes} ({euros(item['importe'])})."
+    else:
+        cabecera = f"⚠️ No consta pagada la cuota de {mes} de <b>{quien}</b> ({euros(item['importe'])})."
+    return (f"{cabecera}\n¿Qué hacemos? <i>(una cuota sin pagar nunca cuenta como pagada)</i>\n"
+            "• ➡️ <b>Pasar al mes siguiente</b>: se paga el mes que viene y todo el plan se retrasa un mes.\n"
+            "• ➕ <b>Las dos juntas</b>: el mes que viene tocan dos cuotas.\n"
+            "• ⏳ <b>Aún puede pagarse</b>: sigue pendiente y te lo recuerdo cada día.")
+
+
+def botones_salto(deuda, per):
+    pagado = "✅ Sí, me ha pagado" if deudas.me_deben(deuda) else "✅ Sí, la pagué"
+    return [[(pagado, f"dp:{deuda['id']}:{per}"), ("💸 Otra cantidad", f"dot:{deuda['id']}:{per}")],
+            [("➡️ Pasar al mes siguiente", f"dsk:{deuda['id']}:pasar:{per}")],
+            [("➕ Las dos juntas", f"dsk:{deuda['id']}:juntas:{per}")],
+            [("⏳ Aún puede pagarse", f"dsk:{deuda['id']}:espera:{per}")]]
 
 
 def botones_pago(deuda, per):
-    pagado = "✅ Me ha pagado" if deudas.me_deben(deuda) else "✅ Pagado"
-    filas = [[(pagado, f"dp:{deuda['id']}:{per}"), ("⏰ Mañana", f"dm:{deuda['id']}:{per}")],
-             [("📅 Aplazar", f"da:{deuda['id']}:{per}")]]
+    te_deben = deudas.me_deben(deuda)
+    filas = [[("✅ Me ha pagado" if te_deben else "✅ Ya lo pagué", f"dp:{deuda['id']}:{per}")]]
     if deuda["tipo"] in deudas.UNICOS:
-        filas[1].append(("💸 Una parte", f"dparte:{deuda['id']}"))
-    return filas
+        filas[0].append(("💸 Una parte", f"dparte:{deuda['id']}"))
+    else:
+        filas[0].append(("💸 Otra cantidad", f"dot:{deuda['id']}:{per}"))
+    segunda = []
+    if te_deben and deuda["tipo"] == "plazos":
+        segunda.append(("⏭️ Saltar este pago", f"dsq:{deuda['id']}:{per}"))
+    elif not te_deben:
+        segunda.append(("📅 Aplazar", f"da:{deuda['id']}:{per}"))
+    segunda.append(("🙈 Ignorar", f"dig:{deuda['id']}:{per}"))
+    return filas + [segunda]
 
 
 def _metas(d, ahora, anadir):
