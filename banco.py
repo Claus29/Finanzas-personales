@@ -66,9 +66,15 @@ class EnableBanking:
     def sesion(self, session_id):
         return self._api("GET", f"/sessions/{session_id}")
 
+    def detalles(self, uid):
+        return self._api("GET", f"/accounts/{uid}/details")
+
+    def saldos(self, uid):
+        return self._api("GET", f"/accounts/{uid}/balances").get("balances", [])
+
     def saldo_actual(self, uid):
         """Devuelve (importe, moneda, tipo) del saldo más representativo de la cuenta."""
-        saldos = self._api("GET", f"/accounts/{uid}/balances").get("balances", [])
+        saldos = self.saldos(uid)
         if not saldos:
             raise ErrorBanco(f"La cuenta {uid} no ha devuelto ningún saldo.")
         saldos.sort(key=lambda b: TIPOS_SALDO.index(b.get("balance_type"))

@@ -106,6 +106,7 @@ echo   - En el escritorio tienes:
 echo       "Bot Finanzas"                     para volver a abrir la ventana del bot
 echo       "Bot Finanzas - Actualizar"        para instalar novedades
 echo       "Bot Finanzas - Reconectar banco"  cuando caduque el permiso de N26
+echo       "Bot Finanzas - Diagnostico"       si el saldo no cuadra
 echo.
 pause
 exit /b 0

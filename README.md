@@ -39,10 +39,12 @@ El propio mensaje diario te avisa 15 días antes. Doble clic en **Bot Finanzas -
 | `INSTALAR.bat` | Instala, configura y arranca todo (también sirve para reparar) |
 | `BOT.bat` | Ventana donde funciona el bot (se reinicia solo si se detiene) |
 | `ACTUALIZAR.bat` | Descarga la última versión y la instala |
+| `DIAGNOSTICO.bat` | Muestra todo lo que devuelve el banco (todos los saldos de cada cuenta) |
 | `RECONECTAR_BANCO.bat` | Vuelve a autorizar el acceso a N26 |
 | `bot.py` | Bot de Telegram con el envío diario del saldo |
 | `saldo.py` | Consulta del saldo y control de "una vez al día" |
 | `banco.py` | Cliente de la API de Enable Banking |
+| `diagnostico.py` | Diagnóstico de cuentas y saldos (guarda `diagnostico.txt` con los IBAN ocultos) |
 | `configurar.py` | Asistente de configuración |
 | `accesos_directos.ps1` | Arranque automático y accesos directos del escritorio |
 
