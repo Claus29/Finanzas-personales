@@ -1,6 +1,5 @@
 """Cliente mínimo de la API de Enable Banking (solo lectura de cuentas, AIS)."""
 import time
-import uuid
 from datetime import datetime, timedelta, timezone
 
 import jwt
@@ -13,7 +12,18 @@ TIPOS_SALDO = ["ITAV", "CLAV", "XPCD", "ITBD", "CLBD", "OPAV", "OPBD"]
 
 
 class ErrorBanco(Exception):
-    pass
+    def __init__(self, estado, texto):
+        super().__init__(f"Error {estado}: {texto}")
+        self.estado = estado
+        self.texto = texto
+
+    @property
+    def permiso_caducado(self):
+        return self.estado == 401 or any(c in self.texto for c in ("EXPIRED_SESSION", "REVOKED", "CLOSED_SESSION"))
+
+    @property
+    def demasiadas_consultas(self):
+        return self.estado == 429
 
 
 class EnableBanking:
@@ -35,30 +45,25 @@ class EnableBanking:
     def _api(self, method, path, **kwargs):
         r = requests.request(method, f"{API}{path}", headers=self._headers(), timeout=30, **kwargs)
         if not r.ok:
-            raise ErrorBanco(f"Error {r.status_code} en {method} {path}: {r.text}")
+            raise ErrorBanco(r.status_code, r.text)
         return r.json()
+
+    # --- Llamadas a Enable Banking (no llegan al banco: no cuentan en el límite diario) ---
 
     def aplicacion(self):
         return self._api("GET", "/application")
 
-    def buscar_banco(self, nombre, pais):
-        bancos = self._api("GET", "/aspsps", params={"country": pais})["aspsps"]
-        for banco in bancos:
-            if nombre.upper() in banco["name"].upper():
-                return banco
-        raise ErrorBanco(f"{nombre} no aparece en la lista de bancos de {pais}.")
+    def bancos(self, pais):
+        return self._api("GET", "/aspsps", params={"country": pais})["aspsps"]
 
-    def iniciar_autorizacion(self, banco, redirect_url, dias=90):
-        maximo = banco.get("maximum_consent_validity", dias * 86400) // 86400
-        dias = min(dias, maximo)
-        auth = self._api("POST", "/auth", json={
+    def iniciar_autorizacion(self, banco, redirect_url, dias, state):
+        return self._api("POST", "/auth", json={
             "access": {"valid_until": (datetime.now(timezone.utc) + timedelta(days=dias)).isoformat()},
             "aspsp": {"name": banco["name"], "country": banco["country"]},
-            "state": str(uuid.uuid4()),
+            "state": state,
             "redirect_url": redirect_url,
             "psu_type": "personal",
-        })
-        return auth["url"], dias
+        })["url"]
 
     def crear_sesion(self, code):
         return self._api("POST", "/sessions", json={"code": code})
@@ -66,23 +71,16 @@ class EnableBanking:
     def sesion(self, session_id):
         return self._api("GET", f"/sessions/{session_id}")
 
-    def detalles(self, uid):
-        return self._api("GET", f"/accounts/{uid}/details")
+    # --- Llamadas que llegan al banco (cuentan en el límite diario) ---
 
     def saldos(self, uid):
         return self._api("GET", f"/accounts/{uid}/balances").get("balances", [])
 
-    def saldo_actual(self, uid):
-        """Devuelve (importe, moneda, tipo) del saldo más representativo de la cuenta."""
-        saldos = self.saldos(uid)
-        if not saldos:
-            raise ErrorBanco(f"La cuenta {uid} no ha devuelto ningún saldo.")
-        saldos.sort(key=lambda b: TIPOS_SALDO.index(b.get("balance_type"))
-                    if b.get("balance_type") in TIPOS_SALDO else len(TIPOS_SALDO))
-        elegido = saldos[0]
-        return elegido["balance_amount"]["amount"], elegido["balance_amount"]["currency"], elegido.get("balance_type")
 
-
-def uids_de_cuentas(sesion):
-    """La API devuelve las cuentas como lista de uids o como lista de objetos según el endpoint."""
-    return [c if isinstance(c, str) else c["uid"] for c in sesion.get("accounts", [])]
+def elegir_saldo(saldos):
+    """Devuelve (importe, moneda, tipo) del saldo más representativo, o None si no hay ninguno."""
+    if not saldos:
+        return None
+    elegido = min(saldos, key=lambda b: TIPOS_SALDO.index(b.get("balance_type"))
+                  if b.get("balance_type") in TIPOS_SALDO else len(TIPOS_SALDO))
+    return elegido["balance_amount"]["amount"], elegido["balance_amount"]["currency"], elegido.get("balance_type")

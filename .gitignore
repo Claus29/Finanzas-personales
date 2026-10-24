@@ -3,6 +3,7 @@
 *.key
 .env
 .env.*
+!.env.example
 
 # Python
 __pycache__/
@@ -13,11 +14,14 @@ venv/
 # Bases de datos locales
 *.db
 *.sqlite3
-!.env.example
 
-# Archivos que genera el bot al funcionar
+# Archivos que genera el bot al funcionar (son del usuario: la actualización no debe pisarlos)
 bot.log*
+conexion.json
+contador_api.json
+ultimo_saldo.json
 ultima_consulta.txt
 version.txt
 version_anunciada.txt
 diagnostico.txt
+*.tmp
