@@ -99,25 +99,58 @@ def _cobro(d, ahora, anadir):
 
 
 def _deudas(d, ahora, anadir):
-    for item in deudas.pendientes(d):
+    """Recordatorio el día de pago (a HORA_AVISO_PAGO, 00:00 por defecto) y cada día si se atrasa.
+
+    Para lo que debes, además, un aviso unos días antes (a las 10:00). Si el ordenador estaba apagado
+    a la hora del recordatorio, se envía en cuanto se encienda ese mismo día.
+    """
+    hora_pago = _momento(d, config.hora_aviso_pago())
+    items = []
+    if config.aviso_activo("AVISO_DEUDAS"):
+        items += deudas.pendientes(d, "debo")
+    if config.aviso_activo("AVISO_ME_DEBEN"):
+        items += deudas.pendientes(d, "me_deben")
+    for item in items:
         deuda, per, vence = item["deuda"], item["periodo"], item["vence"]
         base = f"deuda:{deuda['id']}:{per}"
-        if pospuesto(base, ahora) or not en_franja(HORA_AVISOS, ahora):
+        if pospuesto(base, ahora):
             continue
-        if d == vence - timedelta(days=deuda["avisar_dias"]):
-            cuando = f"dentro de {deuda['avisar_dias']} días ({fecha_corta(vence)})"
-        elif d == vence:
-            cuando = "<b>hoy</b>"
-        elif d > vence:
-            cuando = f"⚠️ desde el {fecha_corta(vence)} (atrasado)"
-        else:
-            continue
-        cuota = ""
-        if deuda["tipo"] == "plazos":
-            cuota = f" (cuota {deudas.periodos(deuda).index(per) + 1}/{deuda['cuotas_total']})"
-        anadir(f"{base}:{d}", f"💳 Pago {cuando}: <b>{analisis.e(deuda['nombre'])}</b>{cuota} · {euros(item['importe'])}",
-               [[("✅ Pagado", f"dp:{deuda['id']}:{per}"), ("⏰ Mañana", f"dm:{deuda['id']}:{per}")],
-                [("📅 Aplazar", f"da:{deuda['id']}:{per}")]])
+        if d >= vence and ahora >= hora_pago:
+            anadir(f"pago:{deuda['id']}:{per}:{d}", texto_pago(item, d), botones_pago(deuda, per))
+        elif (not deudas.me_deben(deuda) and d == vence - timedelta(days=deuda["avisar_dias"])
+              and en_franja(HORA_AVISOS, ahora)):
+            anadir(f"{base}:{d}:antes", f"🔔 Dentro de {deuda['avisar_dias']} días ({fecha_corta(vence)}): "
+                                        f"<b>{analisis.e(deuda['nombre'])}</b>{_cuota(deuda, per)} · {euros(item['importe'])}",
+                   botones_pago(deuda, per))
+
+
+def _cuota(deuda, per):
+    if deuda["tipo"] != "plazos":
+        return ""
+    return f" (cuota {deudas.periodos(deuda).index(per) + 1}/{deuda['cuotas_total']})"
+
+
+def texto_pago(item, d):
+    deuda, per, vence = item["deuda"], item["periodo"], item["vence"]
+    nombre = f"<b>{analisis.e(deuda['nombre'])}</b>{_cuota(deuda, per)}"
+    importe = f"<b>{euros(item['importe'])}</b>"
+    atraso = f"\n⚠️ Era el {fecha_corta(vence)}: va con retraso." if d > vence else ""
+    if deudas.me_deben(deuda):
+        return f"🤝 Hoy {nombre} te tiene que pagar {importe}.{atraso}"
+    if deuda["tipo"] == "suscripcion":
+        return f"📺 Hoy se cobra {nombre}: {importe}.{atraso}"
+    if deudas.aplazada(deuda, per):
+        return f"📅 Hoy vence lo que aplazaste: {nombre} · {importe}.{atraso}"
+    return f"💳 Hoy toca pagar {nombre} · {importe}.{atraso}"
+
+
+def botones_pago(deuda, per):
+    pagado = "✅ Me ha pagado" if deudas.me_deben(deuda) else "✅ Pagado"
+    filas = [[(pagado, f"dp:{deuda['id']}:{per}"), ("⏰ Mañana", f"dm:{deuda['id']}:{per}")],
+             [("📅 Aplazar", f"da:{deuda['id']}:{per}")]]
+    if deuda["tipo"] in deudas.UNICOS:
+        filas[1].append(("💸 Una parte", f"dparte:{deuda['id']}"))
+    return filas
 
 
 def _metas(d, ahora, anadir):

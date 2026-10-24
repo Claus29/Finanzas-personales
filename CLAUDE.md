@@ -5,7 +5,7 @@ Bot de Telegram de finanzas personales para Windows. El usuario NO programa: ins
 último `INSTALAR.bat` de la rama `claude/sweet-thompson-41bsdc` y lo ejecuta con `--actualizar`.
 Toda actualización debe funcionar con ese doble clic, sin que el usuario toque nada.
 
-## Funcionalidad (v5)
+## Funcionalidad (v5 + v6)
 
 - El banco se consulta UNA vez al día (`actualizacion.py`, hora `HORA_SALDO_DIARIO`, 00:00 por
   defecto) o con «🔄 Actualizar ahora» (Ajustes, con confirmación). Descarga saldos y movimientos
@@ -25,6 +25,15 @@ Toda actualización debe funcionar con ese doble clic, sin que el usuario toque 
   ni renombrar tablas o columnas.
 - Si el permiso de N26 caduca, el bot sigue funcionando y la autenticación se pide en la misma
   ventana en segundo plano (`autenticacion.en_segundo_plano`).
+- v6 · Deudas con `sentido` («debo» / «me_deben»; columna añadida en `datos.migrar`). Tipos por sentido
+  en `deudas.TIPOS_POR_SENTIDO`: debo = fecha, cobro, plazos, fijo, suscripcion; me_deben = fecha,
+  plazos, sin_fecha. Lo que te deben NUNCA se suma al saldo neto (se muestra aparte).
+- v6 · Recordatorio el día de pago a `HORA_AVISO_PAGO` (00:00 por defecto, configurable en Ajustes) para
+  todo lo que tiene día de pago (debo, me deben, aplazado, suscripciones), y cada día si se atrasa; si el
+  PC estaba apagado, llega al encenderlo ese día. Es la excepción pedida a «nada a las 00:00»: la
+  actualización con el banco y el saldo siguen siendo silenciosos.
+- El banco solo se consulta en: actualización diaria, su recuperación si el PC estaba apagado,
+  «Actualizar ahora» y tras renovar el permiso (si ese día no había datos). El usuario pidió dejarlo así.
 
 ## Una sola ventana, un solo bot
 
@@ -41,7 +50,7 @@ Toda actualización debe funcionar con ese doble clic, sin que el usuario toque 
 - Nunca renombres ni elimines claves del `.env` (`TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID`, `EB_APP_ID`,
   `EB_KEY_PATH`, `EB_SESSION_ID`, `EB_COUNTRY`, `EB_REDIRECT_URL`, `ZONA_HORARIA`,
   `LIMITE_CONSULTAS_DIA`, `HORA_SALDO_DIARIO`, `SALDO_DIARIO_ACTIVO`, `DIA_COBRO_DESDE`, `DIA_COBRO_HASTA`,
-  `PRESUPUESTO_CICLO`, `UMBRAL_SALDO_BAJO`, `AVISO_*`).
+  `PRESUPUESTO_CICLO`, `UMBRAL_SALDO_BAJO`, `HORA_AVISO_PAGO`, `AVISO_*`).
   Una clave nueva debe tener valor por defecto (`config.POR_DEFECTO`) o pedirse solo si falta.
 - La actualización copia los archivos del repositorio encima de `%LOCALAPPDATA%\FinanzasBot` con
   robocopy y borra una lista fija de archivos obsoletos (en `INSTALAR.bat`). Los archivos que genera

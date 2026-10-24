@@ -105,9 +105,14 @@ def texto_neto():
     reservar = sum(metas.pendiente_ciclo(m) for m in metas.activas() if not m["uid"])
     if reservar:
         lineas.append(f"🎯 Para tus metas conviene apartar este ciclo: {euros(reservar)}")
-    me_deben = [d for d in deudas.activas() if d["tipo"] == "me_deben"]
-    if me_deben:
-        lineas.append(f"🤝 Te deben: {euros(sum(d['importe'] for d in me_deben))} (no se suma)")
+    cobrar = deudas.por_cobrar()
+    if cobrar:
+        total = sum(i["importe"] for i in cobrar)
+        lineas.append(f"🤝 Este ciclo te tienen que pagar {euros(total)} (no se suma): "
+                      f"si te pagan, tu neto sería {euros(neto + total)}")
+    otros = sum(deudas.restante(d)[0] for d in deudas.activas("me_deben")) - sum(i["importe"] for i in cobrar)
+    if otros > 0.004:
+        lineas.append(f"🤝 Más adelante te deben otros {euros(otros)}")
     diario, dias = puedes_gastar(neto)
     lineas.append(f"\n💡 Puedes gastar ~<b>{euros_cortos(diario)}/día</b> durante {dias} días")
     return "\n".join(lineas)
@@ -299,17 +304,38 @@ def texto_evolucion(dias=30):
                       f"⬇️ Mínimo: {euros(minimo[1])} ({fecha_corta(minimo[0])})"])
 
 
-def texto_suscripciones():
+def suscripciones_sin_apuntar():
+    """Cargos mensuales detectados en el banco que aún no están apuntados como suscripción o fijo."""
     if not movimientos.hay_movimientos():
-        return "🔁 <b>Suscripciones</b>\n\nAún no hay movimientos para detectarlas."
-    lista = movimientos.suscripciones(hoy())
-    if not lista:
-        return "🔁 <b>Suscripciones</b>\n\nNo he detectado cargos que se repitan cada mes."
-    total = sum(s["importe"] for s in lista)
-    lineas = ["🔁 <b>Pagos que se repiten cada mes</b>", ""]
-    lineas += [f"• {e(s['nombre'])}: {euros(s['importe'])}/mes" for s in lista[:10]]
-    lineas += ["", f"Total: <b>{euros(total)}/mes</b> ({euros_cortos(total * 12)} al año)",
-               "💡 ¿Usas todas? Cancelar una que no usas es ahorro seguro."]
+        return []
+    apuntadas = {movimientos.normalizar(d["nombre"]) for d in deudas.activas("debo") if d["tipo"] in ("fijo", "suscripcion")}
+    resultado = []
+    for s in movimientos.suscripciones(hoy()):
+        nombre = movimientos.normalizar(s["nombre"])
+        if not any(a and (a in nombre or nombre in a) for a in apuntadas):
+            resultado.append(s)
+    return resultado[:8]
+
+
+def texto_suscripciones():
+    apuntadas = [d for d in deudas.activas("debo") if d["tipo"] == "suscripcion"]
+    detectadas = suscripciones_sin_apuntar()
+    lineas = ["🔁 <b>Suscripciones</b>", ""]
+    if apuntadas:
+        total = sum(d["importe"] for d in apuntadas)
+        lineas.append("📺 <b>Apuntadas</b> (con recordatorio el día de cobro):")
+        lineas += [f"• {e(d['nombre'])}: {euros(d['importe'])}/mes · día {d['dia']}" for d in apuntadas]
+        lineas += [f"Total: <b>{euros(total)}/mes</b> ({euros_cortos(total * 12)} al año)", ""]
+    if detectadas:
+        lineas.append("🔍 <b>Detectadas en tu banco</b> (pulsa para apuntarlas con su día de cobro):")
+        lineas += [f"• {e(s['nombre'])}: ~{euros(s['importe'])}/mes (último cargo {s['ultimo'][8:10]}/{s['ultimo'][5:7]})"
+                   for s in detectadas]
+        lineas.append("")
+    if not apuntadas and not detectadas:
+        lineas.append("No tienes suscripciones apuntadas ni he detectado cargos que se repitan cada mes.")
+        lineas.append("Puedes apuntarlas en 💳 Deudas › ➕ Nueva › 📺 Suscripción.")
+    else:
+        lineas.append("💡 ¿Usas todas? Cancelar una que no usas es ahorro seguro.")
     return "\n".join(lineas)
 
 
@@ -330,67 +356,79 @@ def texto_movimientos(cantidad=10):
 def linea_deuda(deuda):
     falta, cuotas = deudas.restante(deuda)
     proximo = deudas.proximo_pago(deuda)
-    if deuda["tipo"] == "me_deben":
-        return f"🤝 {e(deuda['nombre'])}: te debe {euros(falta)}"
+    icono = deudas.TIPOS[deuda["tipo"]].split(" ")[0]
+    nombre = e(deuda["nombre"])
     if deuda["tipo"] == "plazos":
-        texto = f"🔁 {e(deuda['nombre'])}: {euros(deuda['cuota'])}/mes · quedan {cuotas} ({euros_cortos(falta)})"
-    elif deuda["tipo"] == "fijo":
-        texto = f"🏠 {e(deuda['nombre'])}: {euros(deuda['importe'])}/mes"
+        texto = f"{icono} {nombre}: {euros(deuda['cuota'])}/mes · quedan {cuotas} ({euros_cortos(falta)})"
+    elif deuda["tipo"] in ("fijo", "suscripcion"):
+        texto = f"{icono} {nombre}: {euros(deuda['importe'])}/mes"
     elif deuda["tipo"] == "cobro":
-        texto = f"💶 {e(deuda['nombre'])}: {euros(falta)} al cobrar"
+        texto = f"{icono} {nombre}: {euros(falta)} al cobrar"
+    elif deuda["tipo"] == "sin_fecha":
+        texto = f"{icono} {nombre}: {euros(falta)} · sin día de pago"
     else:
-        texto = f"📅 {e(deuda['nombre'])}: {euros(falta)}"
+        texto = f"{icono} {nombre}: {euros(falta)}"
     if proximo and deuda["tipo"] != "cobro":
-        texto += f" · próximo {fecha_corta(proximo[0])}"
+        texto += f" · {'día de pago' if deudas.me_deben(deuda) else 'próximo'} {fecha_corta(proximo[0])}"
     return texto
 
 
 def texto_deudas():
-    lista = deudas.activas()
-    if not lista:
+    debo, deben = deudas.activas("debo"), deudas.activas("me_deben")
+    if not debo and not deben:
         return ("💳 <b>Deudas y pagos</b>\n\nNo tienes nada apuntado.\n"
-                "Pulsa «➕ Nueva» para añadir una deuda, un pago a plazos o un pago fijo (alquiler, gimnasio...).")
-    pendientes = deudas.pendientes()
-    debes = [d for d in lista if d["tipo"] != "me_deben"]
-    total = sum(deudas.restante(d)[0] for d in debes if d["tipo"] != "fijo")
-    lineas = ["💳 <b>Deudas y pagos</b>", ""]
-    lineas += [linea_deuda(d) for d in lista]
-    lineas += ["", f"Este ciclo te toca pagar: <b>{euros(sum(i['importe'] for i in pendientes))}</b>"]
-    if total:
-        lineas.append(f"Deuda total pendiente (sin fijos): {euros(total)}")
-    atrasadas = [i for i in pendientes if i["atrasada"]]
-    if atrasadas:
-        lineas.append(f"⚠️ {len(atrasadas)} pago(s) atrasado(s): márcalos como pagados si ya los hiciste.")
+                "Pulsa «➕ Nueva» para apuntar lo que debes (deudas, plazos, alquiler, suscripciones) "
+                "o lo que te deben.")
+    lineas = ["💳 <b>Deudas y pagos</b>"]
+    if debo:
+        pendientes = deudas.pendientes()
+        lineas += ["", "💸 <b>LO QUE DEBES</b>"] + [linea_deuda(d) for d in debo]
+        lineas.append(f"Este ciclo te toca pagar: <b>{euros(sum(i['importe'] for i in pendientes))}</b>")
+        total = sum(deudas.restante(d)[0] for d in debo if d["tipo"] not in ("fijo", "suscripcion"))
+        if total:
+            lineas.append(f"Deuda total pendiente (sin fijos ni suscripciones): {euros(total)}")
+        atrasadas = [i for i in pendientes if i["atrasada"]]
+        if atrasadas:
+            lineas.append(f"⚠️ {len(atrasadas)} pago(s) atrasado(s): márcalos como pagados si ya los hiciste.")
+    if deben:
+        lineas += ["", "🤝 <b>LO QUE TE DEBEN</b>"] + [linea_deuda(d) for d in deben]
+        lineas.append(f"Total que te deben: <b>{euros(sum(deudas.restante(d)[0] for d in deben))}</b>")
+        sin_dia = [d for d in deben if d["tipo"] == "sin_fecha"]
+        if sin_dia:
+            lineas.append("💡 Ponles día de pago y te recordaré que te tienen que pagar.")
     return "\n".join(lineas)
 
 
 def texto_deuda(deuda):
     falta, cuotas = deudas.restante(deuda)
+    cobro = deudas.me_deben(deuda)
+    sentido = "Te deben" if cobro else "Debes"
     lineas = [f"{deudas.TIPOS[deuda['tipo']].split(' ')[0]} <b>{e(deuda['nombre'])}</b>",
-              deudas.TIPOS[deuda["tipo"]].split(" ", 1)[1], ""]
+              f"{sentido} · {deudas.TIPOS[deuda['tipo']].split(' ', 1)[1]}", ""]
     if deuda["tipo"] == "plazos":
-        pagadas = deuda["cuotas_total"] - cuotas
+        hechas = deuda["cuotas_total"] - cuotas
         lineas += [f"Cuota: {euros(deuda['cuota'])} el día {deuda['dia']}",
-                   f"{barra(pagadas / deuda['cuotas_total'])} {pagadas}/{deuda['cuotas_total']} cuotas",
-                   f"Falta: <b>{euros(falta)}</b> · terminas en {fecha_corta(deudas.fecha_fin(deuda))} "
-                   f"{deudas.fecha_fin(deuda).year}"]
-    elif deuda["tipo"] == "fijo":
+                   f"{barra(hechas / deuda['cuotas_total'])} {hechas}/{deuda['cuotas_total']} cuotas",
+                   f"Falta: <b>{euros(falta)}</b> · termina el {deudas.fecha_fin(deuda):%d/%m/%Y}"]
+    elif deuda["tipo"] in ("fijo", "suscripcion"):
         lineas.append(f"{euros(deuda['importe'])} cada mes, el día {deuda['dia']}")
     elif deuda["tipo"] == "fecha":
-        lineas.append(f"Importe: <b>{euros(falta)}</b> · vence el {date.fromisoformat(deuda['fecha']):%d/%m/%Y}")
+        lineas.append(f"Importe: <b>{euros(falta)}</b> · día de pago: {date.fromisoformat(deuda['fecha']):%d/%m/%Y}")
     elif deuda["tipo"] == "cobro":
         lineas.append(f"Importe: <b>{euros(falta)}</b> · se paga en cuanto cobres")
     else:
-        lineas.append(f"Te debe: <b>{euros(falta)}</b>")
+        lineas.append(f"Importe: <b>{euros(falta)}</b> · aún sin día de pago")
     proximo = deudas.proximo_pago(deuda)
-    if proximo and deuda["tipo"] in ("plazos", "fijo"):
+    if proximo and deuda["tipo"] in deudas.MENSUALES:
         lineas.append(f"Próximo pago: {fecha_corta(proximo[0])} ({euros(proximo[2])})")
+    if proximo or deuda["tipo"] == "fecha":
+        lineas.append(f"🔔 Te lo recuerdo el día de pago a las {config.hora_aviso_pago()}")
     if deuda["aplazamientos"]:
-        lineas.append(f"Aplazada {deuda['aplazamientos']} vez/veces")
+        lineas.append(f"📅 Aplazada {deuda['aplazamientos']} vez/veces")
     historial = deudas.pagos(deuda["id"])[-3:]
     if historial:
-        lineas.append("Últimos pagos: " + ", ".join(f"{p['fecha'][8:10]}/{p['fecha'][5:7]} {euros_cortos(p['importe'])}"
-                                                    for p in historial))
+        lineas.append(f"Últimos {'cobros' if cobro else 'pagos'}: " + ", ".join(
+            f"{p['fecha'][8:10]}/{p['fecha'][5:7]} {euros_cortos(p['importe'])}" for p in historial))
     return "\n".join(lineas)
 
 

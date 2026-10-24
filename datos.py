@@ -72,6 +72,16 @@ def conexion():
 def iniciar():
     with conexion() as con:
         con.executescript(ESQUEMA)
+        migrar(con)
+
+
+def migrar(con):
+    """Cambios de esquema entre versiones: solo se añaden columnas (nunca se borran ni renombran)."""
+    columnas = {fila["name"] for fila in con.execute("PRAGMA table_info(deudas)")}
+    if "sentido" not in columnas:  # v6: deudas que debes («debo») y que te deben («me_deben»)
+        con.execute("ALTER TABLE deudas ADD COLUMN sentido TEXT NOT NULL DEFAULT 'debo'")
+    # Las «me deben» de la v5 (solo nombre e importe) pasan a «me deben, sin fecha».
+    con.execute("UPDATE deudas SET sentido = 'me_deben', tipo = 'sin_fecha' WHERE tipo = 'me_deben'")
 
 
 def todos(sql, *parametros):

@@ -39,6 +39,9 @@ POR_DEFECTO = {
     "AVISO_RITMO": "1",
     "AVISO_GASTO_GRANDE": "1",
     "AVISO_SUSCRIPCIONES": "0",
+    # v6: recordatorio del día de pago (lo que debes, lo que te deben y suscripciones)
+    "HORA_AVISO_PAGO": "00:00",
+    "AVISO_ME_DEBEN": "1",
 }
 
 
@@ -89,6 +92,17 @@ def hora_saldo_diario():
     except ValueError:
         pass
     return 0, 0
+
+
+def hora_aviso_pago():
+    """'HH:MM' del recordatorio del día de pago (00:00 por defecto)."""
+    try:
+        horas, minutos = (int(x) for x in valor("HORA_AVISO_PAGO").split(":"))
+        if 0 <= horas < 24 and 0 <= minutos < 60:
+            return f"{horas:02d}:{minutos:02d}"
+    except ValueError:
+        pass
+    return POR_DEFECTO["HORA_AVISO_PAGO"]
 
 
 def saldo_diario_activo():

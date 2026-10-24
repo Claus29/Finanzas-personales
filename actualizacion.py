@@ -103,27 +103,32 @@ def actualizar():
 
 
 def pagos_detectados(nuevos):
-    """Si aparece un cargo igual a una cuota o pago pendiente (±5 días), se marca como pagado y se avisa.
+    """Reconoce en los movimientos nuevos los pagos apuntados (±5 días del día de pago, mismo importe).
 
-    Devuelve los ids de los movimientos que se han reconocido como pagos.
+    - Un cargo igual a una cuota, pago fijo o suscripción tuya -> se marca como pagado.
+    - Un ingreso igual a lo que te deben (cuota o pago con día) -> se marca como cobrado.
+    Se avisa a partir de las 09:00 con un botón para deshacerlo. Devuelve los ids de esos movimientos.
     """
-    cargos = [m for m in nuevos if m["importe"] < 0]
     usados = set()
-    if not cargos:
-        return usados
-    for item in deudas.pendientes():
-        if item["deuda"]["tipo"] not in ("plazos", "fijo"):
-            continue
-        for m in cargos:
+    cargos = [m for m in nuevos if m["importe"] < 0]
+    abonos = [m for m in nuevos if m["importe"] > 0]
+    candidatos = [(i, cargos) for i in deudas.pendientes(sentido="debo") if i["deuda"]["tipo"] in deudas.MENSUALES]
+    candidatos += [(i, abonos) for i in deudas.por_cobrar() if i["deuda"]["tipo"] in ("fecha", "plazos")]
+    for item, lista in candidatos:
+        for m in lista:
             if m["id"] in usados:
                 continue
             cerca = abs((date.fromisoformat(m["fecha"]) - item["vence"]).days) <= 5
-            if cerca and abs(-m["importe"] - item["importe"]) <= 0.5:
+            if cerca and abs(abs(m["importe"]) - item["importe"]) <= 0.5:
                 _, accion = deudas.pagar(item["deuda"]["id"], item["periodo"])
                 usados.add(m["id"])
-                datos.encolar_aviso(
-                    f"✅ He visto el pago de <b>{item['deuda']['nombre']}</b> ({euros(item['importe'])}, "
-                    f"{m['fecha'][8:10]}/{m['fecha'][5:7]}) y lo he marcado como pagado.",
-                    [[["↩️ No era ese pago", f"desl:{accion}"]]])
+                cuando = f"{m['fecha'][8:10]}/{m['fecha'][5:7]}"
+                if deudas.me_deben(item["deuda"]):
+                    texto = (f"🤝 He visto que <b>{item['deuda']['nombre']}</b> te ha pagado {euros(item['importe'])} "
+                             f"({cuando}) y lo he marcado como cobrado.")
+                else:
+                    texto = (f"✅ He visto el pago de <b>{item['deuda']['nombre']}</b> ({euros(item['importe'])}, "
+                             f"{cuando}) y lo he marcado como pagado.")
+                datos.encolar_aviso(texto, [[["↩️ No era ese pago", f"desl:{accion}"]]])
                 break
     return usados

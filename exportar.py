@@ -15,7 +15,8 @@ HOJAS = [
     ("Movimientos", "SELECT fecha AS Fecha, uid AS Cuenta, importe AS Importe, contraparte AS Contraparte, "
                     "descripcion AS Concepto, categoria AS Categoria, interno AS Traspaso FROM movimientos ORDER BY fecha"),
     ("Cobros", "SELECT fecha AS Fecha, importe AS Importe, tipo AS Tipo, nota AS Nota FROM ingresos ORDER BY fecha"),
-    ("Deudas", "SELECT nombre AS Nombre, tipo AS Tipo, importe AS Importe, cuota AS Cuota, cuotas_total AS Cuotas, "
+    ("Deudas", "SELECT nombre AS Nombre, CASE sentido WHEN 'me_deben' THEN 'Me deben' ELSE 'Debo' END AS Sentido, "
+               "tipo AS Tipo, importe AS Importe, cuota AS Cuota, cuotas_total AS Cuotas, "
                "dia AS Dia, fecha AS Vence, aplazamientos AS Aplazamientos, activa AS Activa FROM deudas WHERE activa >= 0"),
     ("Pagos", "SELECT d.nombre AS Deuda, p.periodo AS Periodo, p.importe AS Importe, p.fecha AS Fecha "
               "FROM pagos p JOIN deudas d ON d.id = p.deuda_id ORDER BY p.fecha"),

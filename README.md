@@ -10,8 +10,8 @@ así que pulsar botones nunca gasta consultas. Tu saldo es la suma de tus cuenta
 | Botón | Qué hace |
 |---|---|
 | 💰 **Saldo** | Total y desglose por cuenta, **saldo neto** (saldo − lo que te toca pagar este ciclo; de las deudas a plazos solo la cuota) y cuánto puedes gastar al día hasta el cobro. Registrar cobro. Últimos movimientos. |
-| 📊 **Análisis** | Ciclo actual (ingresos, gasto, proyección, tasa de ahorro, comparación), presupuesto con semáforo, categorías (gráfico), evolución del saldo (gráfico), semana, suscripciones detectadas y corregir categorías. |
-| 💳 **Deudas** | Pago único con fecha, «al cobrar», a plazos, fijo mensual y «me deben». Recordatorios, marcar pagado (o parte), aplazar. Si el banco muestra un cargo igual a una cuota, se marca solo. |
+| 📊 **Análisis** | Ciclo actual (ingresos, gasto, proyección, tasa de ahorro, comparación), presupuesto con semáforo, categorías (gráfico), evolución del saldo (gráfico), semana, suscripciones detectadas (apúntalas con un toque) y corregir categorías. |
+| 💳 **Deudas** | **Lo que debes** (pago único con día de pago, «al cobrar», a plazos, fijo mensual, suscripción) y **lo que te deben** (con día de pago, a plazos o sin fecha). Recordatorio el día de pago a las 00:00 (configurable) y cada día si se atrasa; marcar pagado (o parte), aplazar. Lo que te deben no se suma al saldo neto. Si el banco muestra el cargo o el ingreso, se marca solo. |
 | 🎯 **Metas** | Metas de ahorro con barra de progreso, cuánto ahorrar al mes y si vas bien. Manuales o vinculadas a una cuenta (p. ej. un Espacio). |
 | ⏰ **Recordatorios** | El del cobro insiste hasta que registres el salario (y propone la nómina si la ve en el banco). Recordatorios propios: una vez, diario, semanal o mensual. |
 | ⚙️ **Ajustes** | Límite de consultas, hora de actualización, días de cobro, presupuesto, aviso de saldo bajo, avisos on/off, «Actualizar ahora», exportar a Excel. |
