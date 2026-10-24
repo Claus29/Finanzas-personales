@@ -69,6 +69,10 @@ def texto_error(e):
     """Mensaje de error comprensible para Telegram (sin Markdown)."""
     if "Error 429" in str(e):
         return "⏳ El banco limita el número de consultas al día. Prueba de nuevo más tarde."
+    if "EXPIRED_SESSION" in str(e) or "Error 401" in str(e):
+        return ("⚠️ El permiso de acceso a N26 ha caducado o se ha desvinculado.\n"
+                "1. Si desvinculaste la cuenta en Enable Banking, vuelve a pulsar «Link accounts» en tu aplicación.\n"
+                f"2. {AVISO_RECONECTAR}")
     return f"❌ No he podido consultar el saldo:\n{e}"
 
 

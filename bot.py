@@ -21,9 +21,10 @@ from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandl
 from saldo import BASE, cargar_config, consultado_hoy, consultar_saldo, marcar_consulta, texto_error, zona
 
 # Súbelo y cambia NOVEDADES en cada actualización con cambios visibles: el bot las anuncia una vez.
-VERSION = 2
+VERSION = 3
 NOVEDADES = ("✨ *Bot actualizado*\n\n"
-             "Nuevo: botón «💰 Ver saldo» abajo del chat para consultar tu saldo cuando quieras.")
+             "• Botón «💰 Ver saldo» abajo del chat para consultar tu saldo cuando quieras.\n"
+             "• Si el permiso del banco caduca, ahora te digo exactamente cómo renovarlo.")
 
 cargar_config()
 logging.basicConfig(
