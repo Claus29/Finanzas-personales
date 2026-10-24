@@ -16,8 +16,10 @@ Si a las 00:00 el ordenador estaba apagado o sin internet, te lo envía en cuant
    - instala Python si no lo tienes,
    - descarga el bot en `%LOCALAPPDATA%\FinanzasBot`,
    - te guía para conectar Telegram, tu clave `.pem` de Enable Banking y N26,
-   - deja el bot funcionando y arrancando solo con Windows,
-   - crea en el escritorio **Bot Finanzas - Actualizar** y **Bot Finanzas - Reconectar banco**.
+   - deja el bot funcionando en la ventana **Bot Finanzas**, que se abre sola al encender el PC
+     (no la cierres; puedes minimizarla),
+   - crea en el escritorio **Bot Finanzas** (vuelve a abrir la ventana), **Bot Finanzas - Actualizar**
+     y **Bot Finanzas - Reconectar banco**.
 
 Necesitas tener a mano: Telegram abierto y el archivo `.pem` de Enable Banking.
 
@@ -35,6 +37,7 @@ El propio mensaje diario te avisa 15 días antes. Doble clic en **Bot Finanzas -
 | Archivo | Qué hace |
 |---|---|
 | `INSTALAR.bat` | Instala, configura y arranca todo (también sirve para reparar) |
+| `BOT.bat` | Ventana donde funciona el bot (se reinicia solo si se detiene) |
 | `ACTUALIZAR.bat` | Descarga la última versión y la instala |
 | `RECONECTAR_BANCO.bat` | Vuelve a autorizar el acceso a N26 |
 | `bot.py` | Bot de Telegram con el envío diario del saldo |

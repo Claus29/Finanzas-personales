@@ -1,4 +1,4 @@
-# Crea el arranque automatico del bot con Windows y los accesos directos del escritorio.
+# Crea el arranque automatico del bot con Windows (ventana BOT.bat) y los accesos directos del escritorio.
 $ErrorActionPreference = 'Stop'
 $dir = $PSScriptRoot
 $shell = New-Object -ComObject WScript.Shell
@@ -15,6 +15,7 @@ function Nuevo-Acceso($ruta, $destino, $argumentos, $descripcion) {
 $inicio = [Environment]::GetFolderPath('Startup')
 $escritorio = [Environment]::GetFolderPath('Desktop')
 
-Nuevo-Acceso (Join-Path $inicio 'Bot Finanzas.lnk') (Join-Path $dir '.venv\Scripts\pythonw.exe') ('"' + (Join-Path $dir 'bot.py') + '"') 'Bot Finanzas (se inicia con Windows)'
+Nuevo-Acceso (Join-Path $inicio 'Bot Finanzas.lnk') (Join-Path $dir 'BOT.bat') '' 'Bot Finanzas (se abre al iniciar Windows)'
+Nuevo-Acceso (Join-Path $escritorio 'Bot Finanzas.lnk') (Join-Path $dir 'BOT.bat') '' 'Abre la ventana del bot'
 Nuevo-Acceso (Join-Path $escritorio 'Bot Finanzas - Actualizar.lnk') (Join-Path $dir 'ACTUALIZAR.bat') '' 'Descarga e instala la ultima version del bot'
 Nuevo-Acceso (Join-Path $escritorio 'Bot Finanzas - Reconectar banco.lnk') (Join-Path $dir 'RECONECTAR_BANCO.bat') '' 'Vuelve a autorizar el acceso a N26'

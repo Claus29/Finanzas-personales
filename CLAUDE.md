@@ -16,7 +16,7 @@ Toda actualización debe funcionar con ese doble clic, sin que el usuario toque 
   y nunca en el repositorio, o se sobrescribirían los del usuario.
 - Si un archivo deja de usarse, el código nuevo no debe depender de que haya desaparecido.
 - Dependencias en `requirements.txt` con límite de versión mayor (`<N`).
-- Cambios visibles para el usuario: sube `VERSION` y reescribe `NOVEDADES` en `bot.py`
+- Cambios visibles en Telegram: sube `VERSION` y reescribe `NOVEDADES` en `bot.py`
   (el bot las anuncia una vez por Telegram tras actualizar).
 
 ## Archivos .bat y .ps1
@@ -26,6 +26,9 @@ Toda actualización debe funcionar con ese doble clic, sin que el usuario toque 
 - `INSTALAR.bat` es idempotente: instala, repara y actualiza. Si se ejecuta desde la carpeta de
   instalación se copia a TEMP antes de seguir (la actualización lo sobrescribe).
 - `ACTUALIZAR.bat` debe seguir siendo mínimo: solo descarga `INSTALAR.bat` y lo ejecuta.
+- El bot funciona en una ventana visible (`BOT.bat`, el usuario quiere verla abierta), que arranca
+  con Windows y desde el acceso directo «Bot Finanzas». `BOT.bat` cierra cualquier otra instancia
+  al abrirse; `INSTALAR.bat` (`:parar_bot`) cierra la ventana y el bot antes de actualizar.
 
 ## Comportamiento que hay que respetar
 

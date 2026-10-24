@@ -81,9 +81,9 @@ echo [6/7] Configuracion...
 "%VPY%" "%DIR%\configurar.py" || goto :error
 
 rem ---------- 7. Arranque automatico y puesta en marcha ----------
-echo [7/7] Creando accesos directos y arrancando el bot...
+echo [7/7] Creando accesos directos y abriendo la ventana del bot...
 powershell -NoProfile -ExecutionPolicy Bypass -File "%DIR%\accesos_directos.ps1" || goto :error
-start "" "%DIR%\.venv\Scripts\pythonw.exe" "%DIR%\bot.py"
+start "" "%DIR%\BOT.bat"
 timeout /t 8 /nobreak >nul
 call :bot_en_marcha
 if errorlevel 1 (
@@ -97,11 +97,13 @@ echo.
 echo  ==========================================================
 echo     TODO LISTO. El bot esta funcionando.
 echo  ==========================================================
+echo   - Se ha abierto la ventana "Bot Finanzas": ahi ves lo que hace el bot.
+echo     No la cierres, puedes minimizarla. Se abre sola al encender el PC.
 echo   - Cada dia a las 00:00 recibiras tu saldo de N26 en Telegram.
-echo   - El bot arranca solo al encender el ordenador.
 echo   - Si el PC estaba apagado a las 00:00, te lo envia al encenderlo.
 echo   - En el chat del bot tienes el boton "Ver saldo" para verlo cuando quieras.
 echo   - En el escritorio tienes:
+echo       "Bot Finanzas"                     para volver a abrir la ventana del bot
 echo       "Bot Finanzas - Actualizar"        para instalar novedades
 echo       "Bot Finanzas - Reconectar banco"  cuando caduque el permiso de N26
 echo.
@@ -120,7 +122,8 @@ if not defined PY if exist "%LOCALAPPDATA%\Programs\Python\Python312\python.exe"
 exit /b 0
 
 :parar_bot
-powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -like 'python*' -and $_.CommandLine -like '*FinanzasBot*\bot.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" >nul 2>&1
+rem Cierra la ventana del bot (BOT.bat) y el propio bot, este en ventana o en segundo plano.
+powershell -NoProfile -Command "$p = Get-CimInstance Win32_Process; $p | Where-Object { $_.Name -eq 'cmd.exe' -and $_.CommandLine -like '*FinanzasBot*\BOT.bat*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }; $p | Where-Object { $_.Name -like 'python*' -and $_.CommandLine -like '*FinanzasBot*\bot.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1
 exit /b 0
 
 :bot_en_marcha
@@ -131,8 +134,8 @@ exit /b %errorlevel%
 echo.
 echo  [ERROR] Algo ha fallado. Haz una captura de esta ventana y enviasela a Claude.
 rem Si el bot ya estaba instalado, se vuelve a arrancar para no dejarte sin el.
-if exist "%DIR%\.env" if exist "%DIR%\.venv\Scripts\pythonw.exe" (
-    call :bot_en_marcha || start "" "%DIR%\.venv\Scripts\pythonw.exe" "%DIR%\bot.py"
+if exist "%DIR%\.env" if exist "%DIR%\BOT.bat" if exist "%VPY%" (
+    call :bot_en_marcha || start "" "%DIR%\BOT.bat"
 )
 echo.
 pause

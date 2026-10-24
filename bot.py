@@ -3,7 +3,7 @@
 - Cada día a las 00:00 te envía el saldo. Si a esa hora el ordenador estaba apagado, dormido
   o sin internet, lo envía en cuanto vuelve a estar disponible (una sola vez al día).
 - Botón «💰 Ver saldo» para consultarlo cuando quieras.
-Solo habla con TELEGRAM_CHAT_ID.
+Solo habla con TELEGRAM_CHAT_ID. En Windows se ejecuta en la ventana de BOT.bat.
     python bot.py
 """
 import asyncio
@@ -31,6 +31,22 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(message)s",
     level=logging.INFO,
 )
+
+
+class FormatoVentana(logging.Formatter):
+    """En la ventana, los errores en una línea; el detalle técnico completo queda en bot.log."""
+
+    def format(self, record):
+        copia = logging.makeLogRecord(record.__dict__)
+        copia.exc_info = copia.exc_text = None
+        texto = super().format(copia)
+        return f"{texto}: {record.exc_info[1]}" if record.exc_info else texto
+
+
+if sys.stdout:  # abierto desde BOT.bat: la actividad también se ve en la ventana
+    consola = logging.StreamHandler(sys.stdout)
+    consola.setFormatter(FormatoVentana("  %(asctime)s  %(message)s", datefmt="%d/%m %H:%M:%S"))
+    logging.getLogger().addHandler(consola)
 # httpx registra cada petición a Telegram con el token en la URL: no queremos eso en el log.
 logging.getLogger("httpx").setLevel(logging.WARNING)
 # Con pythonw no hay consola: cualquier error fatal tiene que quedar en bot.log.
@@ -140,7 +156,8 @@ def main():
     app.job_queue.run_once(anunciar_novedades, when=5)
     app.job_queue.run_daily(enviar_saldo_diario, time=time(0, 0, tzinfo=zona()), name="saldo_diario")
     app.job_queue.run_repeating(enviar_saldo_diario, interval=COMPROBAR_CADA, first=30, name="recuperar_envio")
-    logging.info("Bot v%s iniciado. Saldo programado cada día a las 00:00 (%s)", VERSION, zona())
+    logging.info("Bot v%s iniciado. Saldo automático cada día a las 00:00 (%s)", VERSION, zona())
+    logging.info("Esperando mensajes de Telegram...")
     app.run_polling()
 
 
