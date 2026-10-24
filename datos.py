@@ -88,6 +88,17 @@ def migrar(con):
         con.execute("ALTER TABLE deudas ADD COLUMN si_no_paga TEXT NOT NULL DEFAULT 'preguntar'")
     con.execute("CREATE TABLE IF NOT EXISTS saltos (deuda_id INTEGER NOT NULL, periodo TEXT NOT NULL, "
                 "decision TEXT NOT NULL, fecha TEXT NOT NULL, PRIMARY KEY (deuda_id, periodo))")
+    # v8: metas con aportación (la necesaria o una fija), cuándo recordar y metas especiales (colchón)
+    columnas_metas = {fila["name"] for fila in con.execute("PRAGMA table_info(metas)")}
+    for columna, definicion in (("aporte_modo", "TEXT NOT NULL DEFAULT 'necesaria'"),
+                                ("aporte_fijo", "REAL NOT NULL DEFAULT 0"),
+                                ("recordar", "TEXT NOT NULL DEFAULT 'cobro1'"),
+                                ("especial", "TEXT NOT NULL DEFAULT ''")):
+        if columna not in columnas_metas:
+            con.execute(f"ALTER TABLE metas ADD COLUMN {columna} {definicion}")
+    con.execute("CREATE TABLE IF NOT EXISTS aportes_ciclo (meta_id INTEGER NOT NULL, ciclo TEXT NOT NULL, "
+                "estado TEXT NOT NULL, importe REAL NOT NULL, fecha TEXT NOT NULL, aportacion_id INTEGER, "
+                "PRIMARY KEY (meta_id, ciclo))")
 
 
 def todos(sql, *parametros):

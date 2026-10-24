@@ -5,7 +5,7 @@ Bot de Telegram de finanzas personales para Windows. El usuario NO programa: ins
 último `INSTALAR.bat` de la rama `claude/sweet-thompson-41bsdc` y lo ejecuta con `--actualizar`.
 Toda actualización debe funcionar con ese doble clic, sin que el usuario toque nada.
 
-## Funcionalidad (v5 + v6 + v7)
+## Funcionalidad (v5 + v6 + v7 + v8)
 
 - El banco se consulta UNA vez al día (`actualizacion.py`, hora `HORA_SALDO_DIARIO`, 00:00 por
   defecto) o con «🔄 Actualizar ahora» (Ajustes, con confirmación). Descarga saldos y movimientos
@@ -44,6 +44,23 @@ Toda actualización debe funcionar con ese doble clic, sin que el usuario toque 
   Lo que te deben sin día fijo: preguntas los días `DIAS_AVISO_SIN_DIA` (5,15,25).
 - v7 · Interfaz de deudas en `bot_deudas.py` (bot.py le delega pasos «deuda_*» y prefijos de PREFIJOS);
   análisis de deudas en `analisis_deudas.py` (semáforo % salario comprometido: <30 % / 30–40 % / >40 %).
+- v8 · Metas en sus propias cuentas (`metas.py`): `uid` = cuenta/Espacio de N26 (lo ahorrado es su saldo) o manual.
+  Aportación de cada ciclo: `aporte_modo` «necesaria» (calculada al empezar el ciclo) o «fija» (`aporte_fijo`);
+  siempre se pide esa, salvo que el usuario elija «otra cantidad» o «este mes no» en ese ciclo (`aportes_ciclo`).
+  `recordar`: cobro / cobro1 (por defecto) / dia:N. El recordatorio se repite cada día en la franja de deudas
+  hasta confirmar (`mt:ok|otra|no|ig`). El bot NUNCA mueve dinero: calcula, recuerda y comprueba. Si la cuenta de
+  una meta sube, PREGUNTA si es la aportación; si llega al objetivo, PREGUNTA si la da por conseguida (`mt:fin`).
+- v8 · Al cobrar, plan completo (`analisis.texto_al_cobrar`): atrasado, fijos, cuotas, metas con cuenta destino y
+  lo que queda para gastar. La detección de la nómina (`movimientos.candidato_nomina`, `nom:si/no`) no se toca.
+- v8 · Colchón de emergencia (`colchon.py`): meta especial (`especial = 'colchon'`), DESACTIVADO por defecto
+  (`COLCHON_ACTIVO=0`, `COLCHON_MESES=3`); objetivo = meses × gasto medio (90 días); se activa en Ajustes.
+- v8 · Interfaz de metas y colchón en `bot_metas.py` (pasos «meta_*»/«col_*», prefijos en PREFIJOS; los botones
+  antiguos g:, gs:, ma:, mo: siguen funcionando). Dinero libre = neto − cuentas de metas − aportaciones pendientes.
+- v8 · «🧭 Análisis completo» (`analisis_completo.py`, botones `ac:*`): Ahora, Por meses (ciclos de cobro), Anual,
+  Flujo de caja (cascada), Metas, Salud financiera, Trayectoria; cada pantalla con gráfico y «💡 Qué significa».
+  Índice de salud 0–100 (`PESOS`: ahorro 25, endeudamiento 20, colchón 20, presupuesto 15, puntualidad 10,
+  metas 10), solo con lo que tiene datos (el colchón solo si está activo). Gráficos en `graficos.py`
+  (azul #2a78d6 entradas/totales, naranja #eb6834 salidas, verde #1baf7a tercera serie; sin emojis en etiquetas).
 - El banco solo se consulta en: actualización diaria, su recuperación si el PC estaba apagado,
   «Actualizar ahora» y tras renovar el permiso (si ese día no había datos). El usuario pidió dejarlo así.
 
@@ -63,7 +80,7 @@ Toda actualización debe funcionar con ese doble clic, sin que el usuario toque 
   `EB_KEY_PATH`, `EB_SESSION_ID`, `EB_COUNTRY`, `EB_REDIRECT_URL`, `ZONA_HORARIA`,
   `LIMITE_CONSULTAS_DIA`, `HORA_SALDO_DIARIO`, `SALDO_DIARIO_ACTIVO`, `DIA_COBRO_DESDE`, `DIA_COBRO_HASTA`,
   `PRESUPUESTO_CICLO`, `UMBRAL_SALDO_BAJO`, `HORA_AVISO_PAGO`, `FRANJA_DEUDAS_DESDE`, `FRANJA_DEUDAS_HASTA`,
-  `DIAS_AVISO_SIN_DIA`, `AVISO_*`).
+  `DIAS_AVISO_SIN_DIA`, `COLCHON_ACTIVO`, `COLCHON_MESES`, `AVISO_*`).
   Una clave nueva debe tener valor por defecto (`config.POR_DEFECTO`) o pedirse solo si falta.
 - La actualización copia los archivos del repositorio encima de `%LOCALAPPDATA%\FinanzasBot` con
   robocopy y borra una lista fija de archivos obsoletos (en `INSTALAR.bat`). Los archivos que genera

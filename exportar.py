@@ -21,7 +21,10 @@ HOJAS = [
     ("Pagos", "SELECT d.nombre AS Deuda, p.periodo AS Periodo, p.importe AS Importe, p.fecha AS Fecha "
               "FROM pagos p JOIN deudas d ON d.id = p.deuda_id ORDER BY p.fecha"),
     ("Metas", "SELECT nombre AS Nombre, objetivo AS Objetivo, fecha_limite AS Fecha, ahorrado AS Inicial, "
-              "completada AS Conseguida FROM metas WHERE activa >= 0"),
+              "uid AS Cuenta, aporte_modo AS Aportacion, aporte_fijo AS Fija, completada AS Conseguida "
+              "FROM metas WHERE activa >= 0"),
+    ("Aportes por ciclo", "SELECT m.nombre AS Meta, c.ciclo AS Ciclo, c.estado AS Estado, c.importe AS Importe, "
+                          "c.fecha AS Fecha FROM aportes_ciclo c JOIN metas m ON m.id = c.meta_id ORDER BY c.ciclo"),
     ("Aportaciones", "SELECT m.nombre AS Meta, a.fecha AS Fecha, a.importe AS Importe FROM aportaciones a "
                      "JOIN metas m ON m.id = a.meta_id ORDER BY a.fecha"),
 ]

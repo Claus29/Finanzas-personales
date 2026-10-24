@@ -46,6 +46,9 @@ POR_DEFECTO = {
     "FRANJA_DEUDAS_DESDE": "08:00",
     "FRANJA_DEUDAS_HASTA": "14:00",
     "DIAS_AVISO_SIN_DIA": "5,15,25",
+    # v8: colchón de emergencia (desactivado por defecto) y metas
+    "COLCHON_ACTIVO": "0",
+    "COLCHON_MESES": "3",
 }
 
 

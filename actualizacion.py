@@ -4,6 +4,7 @@ Es la ÚNICA vez que se pregunta al banco: a la hora configurada (00:00 por defe
 ordenador estaba apagado, en cuanto vuelve. Además se puede forzar desde Ajustes («Actualizar
 ahora»). Nunca envía notificaciones: lo que descubre de madrugada se avisa a partir de las 09:00.
 """
+import html
 import logging
 from datetime import date
 
@@ -77,6 +78,7 @@ def actualizar():
     datos.varios("INSERT OR REPLACE INTO saldos (fecha, uid, importe, moneda) VALUES (?, ?, ?, ?)",
                  [(fecha.isoformat(), uid, importe, moneda) for uid, (importe, moneda) in saldos.items()])
     datos.marcar_enviado(f"actualizacion:{fecha.isoformat()}")
+    cambios_en_metas(fecha)
 
     # Movimientos: si fallan, se conservan los saldos y se reintentará mañana.
     importados = []
@@ -137,3 +139,43 @@ def pagos_detectados(nuevos):
                 datos.encolar_aviso(texto, [[[si, f"dp:{deuda['id']}:{item['periodo']}"], ["❌ No", "borrar"]]], desde=desde)
                 break
     return usados
+
+
+def cambios_en_metas(fecha):
+    """Compara el saldo de las cuentas vinculadas a metas con el anterior y PREGUNTA (nunca da por hecho).
+
+    - Si sube y hay aportación pendiente: «¿Es tu aportación a X?» [Sí] [No].
+    - Si baja: aviso de cuánto ha bajado el progreso.
+    - Si llega al objetivo: «¿Doy la meta por conseguida?» [Sí] [Aún no].
+    Los avisos salen en la franja de recordatorios (nunca de madrugada).
+    """
+    import metas
+    (horas, minutos), _ = config.franja_deudas()
+    ahora = config.ahora()
+    desde = max(ahora, ahora.replace(hour=horas, minute=minutos, second=0, microsecond=0))
+    nombres = {c["uid"]: consultas.nombre_cuenta(c) for c in consultas.cuentas()}
+    for meta in metas.activas():
+        if not meta["uid"]:
+            continue
+        actual = datos.valor("SELECT importe FROM saldos WHERE uid = ? AND fecha = ?", meta["uid"], fecha.isoformat())
+        anterior = datos.valor("SELECT importe FROM saldos WHERE uid = ? AND fecha < ? ORDER BY fecha DESC LIMIT 1",
+                               meta["uid"], fecha.isoformat())
+        if actual is None or anterior is None:
+            continue
+        cuenta = nombres.get(meta["uid"], "la cuenta")
+        diferencia = round(actual - anterior, 2)
+        if diferencia >= 1 and metas.pendiente_ciclo(meta) > 0:
+            datos.encolar_aviso(f"💡 He visto que «{cuenta}» ha subido {euros(diferencia)}.\n"
+                                f"¿Es tu aportación a <b>{html.escape(meta['nombre'])}</b> de este mes?",
+                                [[["✅ Sí, es la aportación", f"mt:ok:{meta['id']}:{diferencia}"], ["❌ No", "borrar"]]],
+                                desde=desde)
+        elif diferencia <= -1:
+            p = metas.progreso(meta)
+            datos.encolar_aviso(f"⚠️ «{cuenta}» ha bajado {euros(-diferencia)}: <b>{html.escape(meta['nombre'])}</b> va ahora "
+                                f"al {p['fraccion']:.0%} ({euros(p['ahorrado'])} de {euros(p['objetivo'])}).", desde=desde)
+        if actual >= meta["objetivo"] and not meta["especial"] and not datos.enviado(f"meta_lista:{meta['id']}"):
+            datos.marcar_enviado(f"meta_lista:{meta['id']}")
+            datos.encolar_aviso(f"🎉 «{cuenta}» ya tiene {euros(actual)}: ¡has llegado al objetivo de "
+                                f"<b>{html.escape(meta['nombre'])}</b> ({euros(meta['objetivo'])})!\n¿La doy por conseguida?",
+                                [[["🎉 Sí, conseguida", f"mt:fin:{meta['id']}"], ["Aún no", "borrar"]]], desde=desde)
+

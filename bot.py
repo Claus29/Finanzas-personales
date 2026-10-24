@@ -1,4 +1,4 @@
-"""Bot de Telegram de finanzas personales (v5).
+"""Bot de Telegram de finanzas personales (v8).
 
 - El banco solo se consulta en la actualización diaria (00:00 por defecto, en silencio) o con
   «Actualizar ahora» en Ajustes. Todos los botones calculan al momento con esos datos.
@@ -20,10 +20,13 @@ from telegram.ext import Application, CallbackQueryHandler, CommandHandler, Cont
 
 import actualizacion
 import analisis
+import analisis_completo
 import autenticacion
 import avisos
 import bot_deudas
+import bot_metas
 import ciclo
+import colchon
 import config
 import consultas
 import contador
@@ -34,23 +37,25 @@ import graficos
 import metas
 import movimientos
 from formato import (DIAS_SEMANA, euros, euros_cortos, leer_entero, leer_fecha, leer_hora, leer_importe,
-                     leer_mes, sumar_meses)
+                     sumar_meses)
 from movimientos import CATEGORIAS
 
 # Súbelo y cambia NOVEDADES en cada actualización con cambios visibles: el bot las anuncia una vez.
-VERSION = 7
-NOVEDADES = ("✨ <b>Bot actualizado: versión 7</b>\n\n"
-             "• 🔁 <b>A plazos, como de verdad</b>: pones el <b>total</b> (ej. 409,25 €) y la cuota (80 €) o el número de "
-             "cuotas, y lo que ya llevas pagado. Ves cuánto queda, cuántas cuotas faltan y cuándo terminas.\n"
-             "• Cada cuota <b>el día fijo que elijas, en cuanto cobres</b> (o, si te deben, <b>sin día fijo</b>).\n"
-             "• 💸 <b>Otra cantidad</b>: si un mes pagas más o menos, la cuota del mes queda cubierta y la diferencia va al final.\n"
-             "• ⏭️ Si una cuota no se paga en su mes: <b>pasarla al mes siguiente</b> o <b>pagar las dos juntas</b> "
-             "(eliges en cada deuda). Nunca cuenta como pagada.\n"
-             "• 🔔 Recordatorios de deudas <b>repartidos entre las 08:00 y las 14:00</b>, y nada se da por pagado: "
-             "cada pago pide confirmación y, si lo ignoras, vuelve cada día.\n"
-             "• 🏠 Gastos fijos al cobrar (cada cobro) distintos de pagos únicos al cobrar (una sola vez).\n"
-             "• 📊 Nuevo <b>Análisis de deudas</b>: % de tu salario comprometido, libre de deudas en..., calendario, "
-             "puntualidad, quién te paga a tiempo, consejos y gráfico.")
+VERSION = 8
+NOVEDADES = ("✨ <b>Bot actualizado: versión 8</b>\n\n"
+             "• 🧭 <b>Análisis completo</b> (📊 Análisis): ahora, por meses (ciclos de cobro), anual, flujo de caja, metas, "
+             "salud financiera y trayectoria. Cada pantalla con su gráfico y explicado: balance, tasa de ahorro, ratio de "
+             "endeudamiento, patrimonio neto, gastos hormiga, suscripciones al año y mucho más.\n"
+             "• 🩺 <b>Índice de salud financiera</b>: una nota de 0 a 100 de cómo van tus finanzas y qué la subiría.\n"
+             "• 🎯 <b>Metas en sus propias cuentas</b>: vincula cada meta a un Espacio de N26. En cada cobro te digo cuánto "
+             "mover y a qué cuenta (la cantidad necesaria o una fija) y te lo recuerdo cada día hasta que me digas "
+             "«✅ Ya lo moví». También «otra cantidad» o «este mes no».\n"
+             "• 💶 <b>Al cobrar, el plan completo</b>: gastos fijos, cuotas, lo que mover a cada meta y lo que te queda "
+             "para gastar al día. Nada se da por hecho.\n"
+             "• 🔍 Si veo que una cuenta de meta sube, te pregunto si es tu aportación; si llega al objetivo, te pregunto "
+             "si la doy por conseguida.\n"
+             "• 🛟 <b>Colchón de emergencia</b> listo en ⚙️ Ajustes (de momento desactivado).\n\n"
+             "<i>Recuerda: el bot nunca mueve dinero, solo calcula, recuerda y comprueba.</i>")
 VERSION_ANUNCIADA = config.BASE / "version_anunciada.txt"
 
 B_SALDO, B_ANALISIS, B_DEUDAS, B_METAS, B_RECORDATORIOS, B_AJUSTES = (
@@ -131,7 +136,8 @@ async def pantalla_saldo(update, context, nuevo=False):
 async def pantalla_analisis(update, context, nuevo=False):
     await mostrar(update, context, "📊 <b>Análisis</b>\nTodo calculado con tus datos de "
                                    f"{analisis.texto_actualizado().lower().replace('actualizado ', '')}. ¿Qué quieres ver?",
-                  [[("📆 Ciclo actual", "a:ciclo"), ("🎯 Presupuesto", "a:pres")],
+                  [[("🧭 Análisis completo", "ac:menu")],
+                   [("📆 Ciclo actual", "a:ciclo"), ("🎯 Presupuesto", "a:pres")],
                    [("🧩 Categorías", "a:cat:ciclo"), ("📈 Evolución", "a:evo:30")],
                    [("📅 Semana", "a:sem"), ("🔁 Suscripciones", "a:subs")],
                    [("💳 Deudas", "ad:res"), ("🏷️ Corregir categoría", "a:corregir")]], nuevo)
@@ -142,9 +148,7 @@ async def pantalla_deudas(update, context, nuevo=False):
 
 
 async def pantalla_metas(update, context, nuevo=False):
-    filas = [[("➕ Nueva meta", "g:nueva")]]
-    filas += [[(f"🎯 {m['nombre'][:25]}", f"g:ver:{m['id']}")] for m in metas.activas()]
-    await mostrar(update, context, analisis.texto_metas(), filas, nuevo)
+    await bot_metas.pantalla(update, context, nuevo)
 
 
 async def pantalla_recordatorios(update, context, nuevo=False):
@@ -184,7 +188,8 @@ def texto_ajustes():
              f"🔔 Recordatorios de deudas: entre las <b>{texto_franja()}</b>\n"
              f"🤝 Lo que te deben sin día fijo: te pregunto los días {', '.join(map(str, config.dias_aviso_sin_dia()))}\n"
              f"🎯 Presupuesto por ciclo: {euros_cortos(presupuesto) if presupuesto else 'sin límite'}\n"
-             f"⚠️ Aviso de saldo neto bajo: {('por debajo de ' + euros_cortos(umbral)) if umbral else 'desactivado'}")
+             f"⚠️ Aviso de saldo neto bajo: {('por debajo de ' + euros_cortos(umbral)) if umbral else 'desactivado'}\n"
+             f"{bot_metas.linea_ajustes()}")
     if limite > config.LIMITE_RECOMENDADO:
         texto += f"\n\n⚠️ Con más de {config.LIMITE_RECOMENDADO} consultas al día, N26 podría rechazar algunas."
     return texto
@@ -199,6 +204,7 @@ def filas_ajustes():
             [(f"🔔 Recordatorios de deudas: {texto_franja()}", "aj:fr")],
             [(f"🤝 Sin día fijo: días {'·'.join(map(str, config.dias_aviso_sin_dia()))}", "aj:ds")],
             [("🎯 Presupuesto", "aj:pres"), ("⚠️ Saldo bajo", "aj:umbral")],
+            [(bot_metas.linea_ajustes(), "col:ver")],
             [("🔔 Avisos", "aj:avisos"), ("🔄 Actualizar ahora", "aj:act")],
             [("📤 Exportar a Excel", "aj:exp"), ("✖️ Cerrar", "aj:cerrar")]]
 
@@ -265,38 +271,9 @@ async def responder_pregunta(update, context, espera, escrito):
     if paso.startswith("deuda_") and await bot_deudas.responder(update, context, espera, escrito):
         return None
 
-    # --- Metas
-    if paso == "meta_nombre":
-        esperar(context, "meta_objetivo", nombre=escrito[:40])
-        return await enviar(context, f"🎯 {e(escrito[:40])}\n¿Cuánto quieres ahorrar? (ej. 2000)", [CANCELAR])
-    if paso == "meta_objetivo":
-        importe = leer_importe(escrito)
-        if not importe:
-            return await repetir(update, "Escribe el objetivo, por ejemplo <b>2000</b>.")
-        esperar(context, "meta_fecha", nombre=espera["nombre"], objetivo=importe)
-        return await enviar(context, "¿Para cuándo? Escribe el mes, por ejemplo <b>agosto 2027</b> o <b>08/2027</b>.",
-                            [CANCELAR])
-    if paso == "meta_fecha":
-        fecha = leer_mes(escrito, hoy)
-        if not fecha:
-            return await repetir(update, "Escribe un mes futuro, por ejemplo <b>agosto 2027</b> o <b>08/2027</b>.")
-        esperar(context, "meta_seguimiento", nombre=espera["nombre"], objetivo=espera["objetivo"], fecha=fecha.isoformat())
-        filas = [[("✍️ Lo apunto yo (aportaciones)", "gs:manual")]]
-        filas += [[(f"🔗 Es el saldo de {c['nombre'][:22]}", f"gs:cuenta:{n}")] for n, c in enumerate(consultas.cuentas())]
-        return await enviar(context, "¿Cómo sigo el progreso?\n• <b>Vinculada a una cuenta</b> (ej. un Espacio de N26): "
-                                     "lo ahorrado es su saldo, se actualiza solo.\n• <b>Manual</b>: me dices lo que vas apartando.",
-                            filas + [CANCELAR])
-    if paso == "meta_inicial":
-        importe = 0.0 if escrito.strip() in ("0", "0,00", "nada") else leer_importe(escrito)
-        if importe is None:
-            return await repetir(update, "Escribe cuánto llevas ya ahorrado (0 si nada).")
-        return await crear_meta(update, context, espera, uid=None, inicial=importe)
-    if paso in ("meta_aportar", "meta_retirar"):
-        importe = leer_importe(escrito)
-        if not importe:
-            return await repetir(update, "Escribe el importe, por ejemplo <b>100</b>.")
-        context.user_data.pop("espera", None)
-        return await aportar_meta(context, espera["meta"], importe if paso == "meta_aportar" else -importe)
+    # --- Metas y colchón
+    if paso.startswith(("meta_", "col_")) and await bot_metas.responder(update, context, espera, escrito):
+        return None
 
     # --- Recordatorios
     if paso == "rec_texto":
@@ -373,28 +350,13 @@ async def guardar_cobro(update, context, importe, tipo, fecha, movimiento_id=Non
         datos.ejecutar("DELETE FROM pospuestos WHERE clave = 'cobro'")
         if config.aviso_activo("AVISO_RESUMEN_CICLO") and anterior < fecha:
             await enviar(context, analisis.texto_resumen_ciclo_cerrado(anterior, fecha))
-        await enviar(context, analisis.texto_al_cobrar(),
-                     [[("✅ Marcar lo que ya has pagado", "d:pagar")]] if deudas.pendientes() else None)
-
-
-async def crear_meta(update, context, espera, uid, inicial=0.0):
-    context.user_data.pop("espera", None)
-    meta_id, accion = metas.crear(espera["nombre"], espera["objetivo"], date.fromisoformat(espera["fecha"]),
-                                  uid=uid, ya_ahorrado=inicial)
-    logging.info("Meta creada: %s", espera["nombre"])
-    await enviar(context, "✅ Meta creada:\n\n" + analisis.texto_meta(metas.obtener(meta_id)),
-                 con_deshacer(accion, [[("🎯 Ver metas", "m:metas")]]))
-
-
-async def aportar_meta(context, meta_id, importe):
-    accion, conseguida = metas.aportar(meta_id, importe)
-    meta = metas.obtener(meta_id)
-    p = metas.progreso(meta)
-    texto = (f"{'✅ Aportados' if importe > 0 else '➖ Retirados'} {euros(abs(importe))} a «{e(meta['nombre'])}».\n"
-             f"{analisis.barra(p['fraccion'])} {p['fraccion']:.0%}  {euros_cortos(p['ahorrado'])} / {euros_cortos(p['objetivo'])}")
-    if conseguida:
-        texto += f"\n\n🎉🎉 <b>¡Meta conseguida!</b> Has ahorrado {euros(p['objetivo'])} para «{e(meta['nombre'])}»."
-    await enviar(context, texto, con_deshacer(accion))
+        colchon.actualizar_objetivo()
+        filas = []
+        if deudas.pendientes():
+            filas.append([("✅ Marcar pagos hechos", "d:pagar")])
+        if any(metas.pendiente_ciclo(m) > 0 for m in metas.activas()):
+            filas.append([("🎯 Marcar dinero movido", "mt:lista")])
+        await enviar(context, analisis.texto_al_cobrar(), filas or None)
 
 
 async def crear_recordatorio(context, espera, hora):
@@ -558,42 +520,13 @@ async def atender_boton(update, context, dato):  # noqa: C901  (enrutador de bot
     if clave in bot_deudas.PREFIJOS:
         return await bot_deudas.boton(update, context, partes)
 
-    # --- Metas
-    if clave == "g":
-        if partes[1] == "nueva":
-            esperar(context, "meta_nombre")
-            await mostrar(update, context, "🎯 ¿Cómo se llama tu meta? (ej. <b>Viaje a Japón</b>)", [CANCELAR], nuevo=True)
-        elif partes[1] == "ver":
-            meta = metas.obtener(int(partes[2]))
-            filas = []
-            if not meta["uid"]:
-                filas.append([("➕ Aportar", f"g:ap:{meta['id']}"), ("➖ Retirar", f"g:re:{meta['id']}")])
-            filas.append([("🗑️ Borrar", f"g:bo:{meta['id']}"), ("⬅️ Metas", "m:metas")])
-            await mostrar(update, context, analisis.texto_meta(meta), filas)
-        elif partes[1] in ("ap", "re"):
-            esperar(context, "meta_aportar" if partes[1] == "ap" else "meta_retirar", meta=int(partes[2]))
-            await mostrar(update, context, f"¿Cuánto {'aportas' if partes[1] == 'ap' else 'retiras'}?", [CANCELAR], nuevo=True)
-        elif partes[1] == "bo":
-            accion = metas.borrar(int(partes[2]))
-            await mostrar(update, context, "🗑️ Meta borrada.", con_deshacer(accion, [[("🎯 Ver metas", "m:metas")]]))
-        return None
-    if clave == "gs":
-        espera = context.user_data.get("espera") or {}
-        if espera.get("paso") != "meta_seguimiento":
-            return "Empieza otra vez"
-        if partes[1] == "manual":
-            esperar(context, "meta_inicial", **{k: v for k, v in espera.items() if k != "paso"})
-            await mostrar(update, context, "¿Cuánto llevas ya ahorrado para esta meta? (0 si nada)", [CANCELAR])
-        else:
-            cuenta = consultas.cuentas()[int(partes[2])]
-            await crear_meta(update, context, espera, uid=cuenta["uid"])
-        return None
-    if clave == "ma":
-        await aportar_meta(context, int(partes[1]), float(partes[2]))
-        return "Apuntado"
-    if clave == "mo":
-        esperar(context, "meta_aportar", meta=int(partes[1]))
-        await mostrar(update, context, "¿Cuánto has apartado?", [CANCELAR], nuevo=True)
+    # --- Metas y colchón
+    if clave in bot_metas.PREFIJOS:
+        return await bot_metas.boton(update, context, partes)
+
+    # --- Análisis completo
+    if clave == "ac":
+        await enviar_analisis_completo(context, partes[1], partes[2] if len(partes) > 2 else 0)
         return None
 
     # --- Recordatorios
@@ -784,6 +717,28 @@ async def enviar_evolucion(context, dias):
         await context.bot.send_message(estado["chat_id"], texto, parse_mode="HTML", reply_markup=filas)
 
 
+MENU_COMPLETO = [[("📌 Ahora", "ac:ahora"), ("📅 Por meses", "ac:meses"), ("📆 Anual", "ac:anual")],
+                 [("💧 Flujo de caja", "ac:flujo:0"), ("🎯 Metas", "ac:metas")],
+                 [("🩺 Salud financiera", "ac:salud"), ("🔮 Trayectoria", "ac:tray")],
+                 [("⬅️ Análisis", "m:analisis")]]
+
+
+async def enviar_analisis_completo(context, nombre, arg=0):
+    """Pantallas del 🧭 Análisis completo: primero el gráfico (o los gráficos) y después el texto con los botones."""
+    texto, imagenes = await asyncio.to_thread(analisis_completo.pantalla, nombre, arg)
+    filas = [fila[:] for fila in MENU_COMPLETO]
+    if nombre == "flujo":
+        atras = int(arg or 0)
+        navegar = [] if "No hay datos" in texto else [("◀️ Ciclo anterior", f"ac:flujo:{atras + 1}")]
+        if atras > 0:
+            navegar.append(("Siguiente ▶️", f"ac:flujo:{atras - 1}"))
+        if navegar:
+            filas.insert(0, navegar)
+    for imagen in imagenes:
+        await context.bot.send_photo(estado["chat_id"], photo=imagen)
+    await context.bot.send_message(estado["chat_id"], texto, parse_mode="HTML", reply_markup=teclado(filas))
+
+
 # =====================================================================
 # Tareas programadas
 # =====================================================================
@@ -879,6 +834,7 @@ def ejecutar():
     """Arranca el bot y bloquea hasta que se detiene."""
     config.cargar()
     datos.iniciar()
+    colchon.actualizar_objetivo()
     estado["chat_id"] = int(config.valor("TELEGRAM_CHAT_ID"))
     app = crear_aplicacion(config.valor("TELEGRAM_TOKEN"))
     solo_yo = filters.Chat(chat_id=estado["chat_id"])

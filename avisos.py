@@ -54,10 +54,7 @@ def calcular(ahora=None):
         lista.append((f"cola:{aviso['id']}", aviso["texto"], json.loads(aviso["botones"])))
 
     _cobro(d, ahora, anadir)
-    if config.aviso_activo("AVISO_DEUDAS"):
-        _deudas(d, ahora, anadir)
-    if config.aviso_activo("AVISO_METAS"):
-        _metas(d, ahora, anadir)
+    _deudas(d, ahora, anadir)  # deudas, lo que te deben y metas, repartidos en la franja (cada uno con su interruptor)
     _permiso(d, ahora, anadir)
     if config.aviso_activo("AVISO_RESUMEN_SEMANAL") and d.weekday() == 6 and en_franja("20:00", ahora):
         anadir(f"semanal:{d}", analisis.texto_semana(d))
@@ -148,7 +145,11 @@ def _deudas(d, ahora, anadir):
                                f"<b>{analisis.e(deuda['nombre'])}</b>{_cuota(deuda, item)} · {euros(item['importe'])}",
                                botones_pago(deuda, per)))
 
-    # 3) Reparto en la franja: el i-ésimo aviso del día sale a desde + i·(duración/n)
+    # 3) Dinero que mover a tus metas en este ciclo (hasta que lo confirmes)
+    if config.aviso_activo("AVISO_METAS"):
+        candidatos += _candidatos_metas(d, ahora)
+
+    # 4) Reparto en la franja: el i-ésimo aviso del día sale a desde + i·(duración/n)
     candidatos.sort(key=lambda c: (c[0], c[1]))
     (h1, m1), (h2, m2) = config.franja_deudas()
     inicio = _momento(d, f"{h1:02d}:{m1:02d}")
@@ -232,23 +233,34 @@ def botones_pago(deuda, per):
     return filas + [segunda]
 
 
-def _metas(d, ahora, anadir):
-    inicio = ciclo.inicio(d)
-    if not ciclo.ultimo_salario(d) or d != inicio + timedelta(days=1) or not en_franja(HORA_AVISOS, ahora):
-        return
+def _candidatos_metas(d, ahora):
+    """Recordatorio de mover/apartar la aportación de cada meta, cada día desde su día hasta confirmarla."""
+    lista = []
+    nombres = {c["uid"]: consultas.nombre_cuenta(c) for c in consultas.cuentas()}
     for meta in metas.activas():
-        falta = metas.pendiente_ciclo(meta, d)
-        if falta <= 0:
+        pendiente = metas.pendiente_ciclo(meta, d)
+        inicio = metas.inicio_recordatorio(meta, d)
+        if pendiente <= 0 or not inicio or d < inicio or pospuesto(f"meta:{meta['id']}", ahora):
             continue
-        if meta["uid"]:
-            cuenta = next((c for c in consultas.cuentas() if c["uid"] == meta["uid"]), None)
-            destino = f" a «{analisis.e(consultas.nombre_cuenta(cuenta))}»" if cuenta else ""
-            anadir(f"meta:{meta['id']}:{inicio}", f"🎯 <b>{analisis.e(meta['nombre'])}</b>: este ciclo toca apartar "
-                                                  f"<b>{euros_cortos(falta)}</b>{destino}.")
-        else:
-            anadir(f"meta:{meta['id']}:{inicio}", f"🎯 <b>{analisis.e(meta['nombre'])}</b>: este ciclo toca apartar "
-                                                  f"<b>{euros_cortos(falta)}</b>.",
-                   [[(f"✅ Aparté {euros_cortos(falta)}", f"ma:{meta['id']}:{falta}"), ("✍️ Otro importe", f"mo:{meta['id']}")]])
+        lista.append((2, f"meta:{meta['id']}:{metas.clave_ciclo(d)}:{d}", texto_meta(meta, pendiente, inicio, d, nombres),
+                      botones_meta(meta, pendiente)))
+    return lista
+
+
+def texto_meta(meta, importe, inicio, d, nombres):
+    nombre = analisis.e(meta["nombre"])
+    desde = f"\n<i>Pendiente desde el {fecha_corta(inicio)}.</i>" if d > inicio else ""
+    icono = "🛟" if meta["especial"] == "colchon" else "🎯"
+    if meta["uid"]:
+        cuenta = analisis.e(nombres.get(meta["uid"], "su cuenta"))
+        return (f"{icono} Mueve <b>{euros(importe)}</b> a «{cuenta}» para <b>{nombre}</b>.\n"
+                f"Hazlo en la app de N26 y confírmamelo.{desde}")
+    return f"{icono} Aparta <b>{euros(importe)}</b> para <b>{nombre}</b> y confírmamelo.{desde}"
+
+
+def botones_meta(meta, importe):
+    return [[(f"✅ Ya lo moví ({euros_cortos(importe)})", f"mt:ok:{meta['id']}"), ("💸 Otra cantidad", f"mt:otra:{meta['id']}")],
+            [("⏭️ Este mes no", f"mt:no:{meta['id']}"), ("🙈 Ignorar", f"mt:ig:{meta['id']}")]]
 
 
 def _permiso(d, ahora, anadir):

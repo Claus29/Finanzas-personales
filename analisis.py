@@ -52,12 +52,18 @@ def texto_actualizado():
     return f"Actualizado {cuando} a las {momento:%H:%M}"
 
 
+def dinero_libre(neto, d=None):
+    """Saldo neto − dinero que ya está en las cuentas de tus metas − lo que falta apartar este ciclo."""
+    import colchon
+    reservar = sum(metas.pendiente_ciclo(m, d) for m in metas.activas())
+    return round(neto - colchon.dinero_en_metas() - reservar, 2)
+
+
 def puedes_gastar(neto, d=None):
-    """(€ al día, días hasta el cobro) descontando lo que falta apartar para las metas."""
+    """(€ al día, días hasta el cobro) con el dinero libre (sin el de las metas)."""
     d = d or hoy()
     dias = ciclo.dias_hasta_cobro(d)
-    reservar = sum(metas.pendiente_ciclo(m, d) for m in metas.activas() if not m["uid"])
-    return max(0.0, round((neto - reservar) / dias, 2)), dias
+    return max(0.0, round(dinero_libre(neto, d) / dias, 2)), dias
 
 
 def texto_saldo():
@@ -102,9 +108,13 @@ def texto_neto():
     if comprometido:
         lineas.append(f"\n⏭️ Comprometido del próximo cobro: {euros(sum(i for _, i in comprometido))} "
                       f"({', '.join(e(d['nombre']) for d, _ in comprometido)})")
-    reservar = sum(metas.pendiente_ciclo(m) for m in metas.activas() if not m["uid"])
+    import colchon
+    en_metas = colchon.dinero_en_metas()
+    if en_metas:
+        lineas.append(f"🎯 En las cuentas de tus metas: {euros(en_metas)} (no es dinero libre)")
+    reservar = sum(metas.pendiente_ciclo(m) for m in metas.activas())
     if reservar:
-        lineas.append(f"🎯 Para tus metas conviene apartar este ciclo: {euros(reservar)}")
+        lineas.append(f"🎯 Te falta apartar este ciclo para tus metas: {euros(reservar)}")
     cobrar = deudas.por_cobrar()
     if cobrar:
         total = sum(i["importe"] for i in cobrar)
@@ -465,18 +475,37 @@ def texto_metas():
 
 
 def texto_meta(meta):
+    """Ficha de una meta: progreso, aportación de cada ciclo, recordatorio, ritmo real y fecha estimada."""
     p = metas.progreso(meta)
     seguimiento = "vinculada a tu cuenta" if meta["uid"] else "aportaciones manuales"
     cuenta = next((c for c in consultas.cuentas() if c["uid"] == meta["uid"]), None)
     if cuenta:
         seguimiento += f" «{e(consultas.nombre_cuenta(cuenta))}»"
-    lineas = [f"🎯 <b>{e(meta['nombre'])}</b>", f"<i>{seguimiento}</i>", "",
+    icono = "🛟" if meta["especial"] == "colchon" else "🎯"
+    lineas = [f"{icono} <b>{e(meta['nombre'])}</b>", f"<i>{seguimiento}</i>", "",
               f"{barra(p['fraccion'], 15)} {p['fraccion']:.0%}",
               f"{euros(p['ahorrado'])} de {euros(p['objetivo'])}"]
     if p["falta"] > 0:
-        lineas.append(f"Faltan {euros(p['falta'])} · {p['meses']} mes(es) → ahorra <b>{euros_cortos(p['mensual'])}/mes</b>")
-        lineas.append(f"Fecha: {fecha_corta(p['limite'])} {p['limite'].year}")
+        lineas.append(f"Faltan {euros(p['falta'])} · {p['meses']} mes(es) → lo justo: <b>{euros_cortos(p['mensual'])}/mes</b>")
+        if meta["especial"] != "colchon":
+            lineas.append(f"Fecha: {fecha_corta(p['limite'])} {p['limite'].year}")
     lineas.append(p["estado"])
+    if p["falta"] > 0 and meta["activa"] == metas.ACTIVA:
+        modo = (f"✍️ fija de {euros_cortos(meta['aporte_fijo'])}" if meta["aporte_modo"] == "fija" and meta["aporte_fijo"]
+                else "🧮 la necesaria para llegar a tiempo")
+        lineas += ["", f"💶 Aportación de cada cobro: {modo}",
+                   f"⏰ Te lo recuerdo {metas.describir_recordar(meta)}, cada día hasta que lo confirmes"]
+        estado = metas.estado_ciclo(meta)
+        if estado:
+            lineas.append("✅ Este ciclo: " + ("no aportas (lo saltaste)" if estado["estado"] == "saltado"
+                                               else f"{euros(estado['importe'])} confirmados"))
+        else:
+            lineas.append(f"⏳ Este ciclo: falta apartar <b>{euros(metas.aporte_previsto(meta))}</b>")
+        ritmo = metas.ritmo_real(meta)
+        estimada = metas.fecha_estimada(meta)
+        lineas.append(f"📈 Ritmo real: {euros_cortos(ritmo)}/mes · "
+                      + (f"llegarías en {MESES[estimada.month - 1]} {estimada.year}" if estimada
+                         else "a este ritmo no llegas"))
     return "\n".join(lineas)
 
 
@@ -494,21 +523,70 @@ def texto_resumen_ciclo_cerrado(inicio, fin):
     return "\n".join(lineas)
 
 
-def texto_al_cobrar():
-    """Lo que toca hacer con el salario recién registrado. Nada se da por pagado."""
-    items = deudas.pendientes()
-    lineas = ["💶 <b>¡Cobrado!</b> Esto es lo que toca este ciclo:", ""]
-    if items:
-        lineas += [f"• {e(i['deuda']['nombre'])}: {euros(i['importe'])} ({fecha_corta(i['vence'])})" for i in items]
-        lineas.append(f"Total a pagar: <b>{euros(sum(i['importe'] for i in items))}</b>")
-        (h1, m1), (h2, m2) = config.franja_deudas()
-        lineas.append(f"\n<i>Nada se da por pagado: marca lo que ya hayas pagado. Lo demás te lo recordaré "
-                      f"cada día entre las {h1:02d}:{m1:02d} y las {h2:02d}:{m2:02d} hasta que lo confirmes.</i>")
+def plan_cobro(importe=None, d=None):
+    """Reparto del salario del ciclo: pagos, metas, colchón y lo que queda para gastar."""
+    import colchon
+    d = d or hoy()
+    salario = ciclo.ultimo_salario(d)
+    if importe is None:
+        importe = salario["importe"] if salario else 0.0
+    fecha_cobro = date.fromisoformat(salario["fecha"]) if salario else ciclo.inicio(d)
+    pendientes = deudas.pendientes(d)
+    atrasado = [i for i in pendientes if i["vence"] < fecha_cobro]
+    del_ciclo = [i for i in pendientes if i["vence"] >= fecha_cobro]
+    fijos = [i for i in del_ciclo if i["deuda"]["tipo"] in ("fijo", "suscripcion")]
+    cuotas = [i for i in del_ciclo if i["deuda"]["tipo"] not in ("fijo", "suscripcion")]
+    aportes = [(m, metas.pendiente_ciclo(m, d)) for m in metas.activas()]
+    aportes = [(m, x) for m, x in aportes if x > 0]
+    total = lambda lista: round(sum(i["importe"] for i in lista), 2)  # noqa: E731
+    salidas = total(fijos) + total(cuotas) + total(atrasado) + sum(x for _, x in aportes)
+    queda = round(importe - salidas, 2)
+    dias = ciclo.dias_hasta_cobro(d)
+    return {"importe": importe, "fecha": fecha_cobro, "fijos": fijos, "cuotas": cuotas, "atrasado": atrasado,
+            "aportes": aportes, "queda": queda, "dias": dias, "por_dia": round(queda / dias, 2) if dias else queda,
+            "cobrar": deudas.por_cobrar(d), "colchon": colchon.activo()}
+
+
+def texto_al_cobrar(importe=None):
+    """Plan completo del cobro. Nada se da por pagado ni por movido: cada cosa se recuerda hasta confirmarla."""
+    p = plan_cobro(importe)
+    nombres = {c["uid"]: consultas.nombre_cuenta(c) for c in consultas.cuentas()}
+    lineas = [f"💶 <b>¡Cobrado! {euros(p['importe'])}</b> · plan del ciclo de {MESES[p['fecha'].month - 1]}", ""]
+
+    def bloque(titulo, items):
+        if items:
+            lineas.append(f"{titulo}: <b>−{euros(sum(i['importe'] for i in items))}</b>")
+            lineas.extend(f"   • {e(i['deuda']['nombre'])} {euros_cortos(i['importe'])} ({cuando(i)})" for i in items)
+
+    def cuando(item):
+        if item["deuda"]["tipo"] == "cobro" or deudas.modo(item["deuda"]) == "cobro":
+            return "al cobrar"
+        return fecha_corta(item["vence"])
+
+    bloque("⚠️ Atrasado de antes", p["atrasado"])
+    bloque("🏠 Gastos fijos y suscripciones", p["fijos"])
+    bloque("💳 Cuotas y deudas", p["cuotas"])
+    if p["aportes"]:
+        lineas.append(f"🎯 Mover a tus metas: <b>−{euros(sum(x for _, x in p['aportes']))}</b>")
+        for meta, importe in p["aportes"]:
+            icono = "🛟" if meta["especial"] == "colchon" else "→"
+            destino = f"a «{e(nombres.get(meta['uid'], 'su cuenta'))}»" if meta["uid"] else "(apartar)"
+            lineas.append(f"   {icono} {e(meta['nombre'])} {euros_cortos(importe)} {destino}")
+    lineas += ["──────────", f"💸 <b>Te quedan para gastar: {euros(p['queda'])}</b>"]
+    if p["queda"] >= 0:
+        lineas.append(f"   ≈ {euros_cortos(p['por_dia'])}/día durante {p['dias']} días")
+        presupuesto = config.importe("PRESUPUESTO_CICLO")
+        if presupuesto:
+            icono = "🟢" if p["queda"] >= presupuesto else "🟡"
+            lineas.append(f"   {icono} Tu presupuesto de gasto es {euros_cortos(presupuesto)}")
     else:
-        lineas.append("Nada pendiente de pagar ✅")
-    reservas = [(m, metas.pendiente_ciclo(m)) for m in metas.activas()]
-    reservas = [(m, r) for m, r in reservas if r > 0]
-    if reservas:
-        lineas += ["", "🎯 Para tus metas, aparta:"]
-        lineas += [f"• {e(m['nombre'])}: {euros_cortos(r)}" for m, r in reservas]
+        lineas += [f"🔴 <b>No llega: te faltan {euros(-p['queda'])}.</b> Opciones:",
+                   "   • Aplazar algún pago (📅 Aplazar en sus recordatorios).",
+                   "   • Este mes no aportar a alguna meta (⏭️ Este mes no).",
+                   "   • Pagar una cuota de otra cantidad (💸 Otra cantidad)."]
+    if p["cobrar"]:
+        lineas.append(f"\n🤝 Además te tienen que pagar {euros(sum(i['importe'] for i in p['cobrar']))} (no se cuenta).")
+    (h1, m1), (h2, m2) = config.franja_deudas()
+    lineas.append(f"\n<i>Nada se da por hecho: marca lo que ya hayas pagado y movido. Lo demás te lo recuerdo "
+                  f"cada día entre las {h1:02d}:{m1:02d} y las {h2:02d}:{m2:02d} hasta que lo confirmes.</i>")
     return "\n".join(lineas)

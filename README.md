@@ -10,14 +10,15 @@ así que pulsar botones nunca gasta consultas. Tu saldo es la suma de tus cuenta
 | Botón | Qué hace |
 |---|---|
 | 💰 **Saldo** | Total y desglose por cuenta, **saldo neto** (saldo − lo que te toca pagar este ciclo; de las deudas a plazos solo la cuota) y cuánto puedes gastar al día hasta el cobro. Registrar cobro. Últimos movimientos. |
-| 📊 **Análisis** | Ciclo actual (ingresos, gasto, proyección, tasa de ahorro, comparación), presupuesto con semáforo, categorías (gráfico), evolución del saldo (gráfico), semana, suscripciones detectadas (apúntalas con un toque) y corregir categorías. |
+| 📊 **Análisis** | **🧭 Análisis completo** (Ahora, Por meses por ciclos de cobro, Anual, Flujo de caja en cascada, Metas, Salud financiera 0–100 y Trayectoria a 6 y 12 meses), cada pantalla con su gráfico y explicada. Además: ciclo actual (ingresos, gasto, proyección, tasa de ahorro, comparación), presupuesto con semáforo, categorías (gráfico), evolución del saldo (gráfico), semana, suscripciones detectadas (apúntalas con un toque) y corregir categorías. |
 | 💳 **Deudas** | **Lo que debes** (pago único con fecha, pago único al cobrar, a plazos, gasto fijo, suscripción) y **lo que te deben** (con día de pago, a plazos o sin fecha). A plazos: pones el **total** y la cuota (o el nº de cuotas) y lo ya pagado; cada cuota un día fijo, **al cobrar** o (si te deben) sin día fijo. «Otra cantidad» recalcula las cuotas. Si una cuota no se paga: pasarla al mes siguiente o pagar las dos juntas (nunca cuenta como pagada). Recordatorios entre las 08:00 y las 14:00 que piden confirmación y se repiten hasta que la des. Lo que te deben no se suma al saldo neto. **Análisis de deudas** con % del salario comprometido, libre de deudas en…, calendario, puntualidad y gráfico. |
-| 🎯 **Metas** | Metas de ahorro con barra de progreso, cuánto ahorrar al mes y si vas bien. Manuales o vinculadas a una cuenta (p. ej. un Espacio). |
+| 🎯 **Metas** | Metas de ahorro en **su propia cuenta** (un Espacio de N26) o manuales. En cada cobro te dice cuánto mover y a qué cuenta (la cantidad necesaria o una fija) y te lo recuerda cada día hasta que confirmes («ya lo moví», «otra cantidad» o «este mes no»). Si ve que la cuenta sube, pregunta si es tu aportación; al llegar al objetivo, pregunta si la da por conseguida. El bot **nunca mueve dinero**. |
 | ⏰ **Recordatorios** | El del cobro insiste hasta que registres el salario (y propone la nómina si la ve en el banco). Recordatorios propios: una vez, diario, semanal o mensual. |
-| ⚙️ **Ajustes** | Límite de consultas, hora de actualización, días de cobro, presupuesto, aviso de saldo bajo, avisos on/off, «Actualizar ahora», exportar a Excel. |
+| ⚙️ **Ajustes** | Límite de consultas, hora de actualización, días de cobro, presupuesto, aviso de saldo bajo, 🛟 colchón de emergencia (desactivado por defecto), avisos on/off, «Actualizar ahora», exportar a Excel. |
 
 El «mes» del presupuesto es el **ciclo de cobro**: empieza el día en que cobras y dura hasta el
-siguiente cobro (por defecto se espera entre el día 3 y el 7).
+siguiente cobro (por defecto se espera entre el día 3 y el 7). Al registrar el cobro llega el
+**plan completo**: gastos fijos, cuotas, lo que mover a cada meta y lo que te queda para gastar al día.
 
 ## Instalación en Windows (un clic)
 
@@ -47,8 +48,10 @@ recordatorios), con una copia de seguridad diaria en `copias\` (14 días), y el 
 | `bot.py` | Telegram: botones, menús, pasos guiados y tareas programadas |
 | `actualizacion.py` | La única consulta diaria al banco (saldos y movimientos) |
 | `analisis.py`, `graficos.py` | Métricas y gráficos |
+| `analisis_completo.py` | Análisis completo: 7 pantallas e índice de salud financiera |
 | `deudas.py`, `metas.py`, `ciclo.py`, `movimientos.py` | Lógica de deudas, metas, ciclo de cobro y gastos |
 | `bot_deudas.py`, `analisis_deudas.py` | Interfaz y análisis de deudas |
+| `bot_metas.py`, `colchon.py` | Interfaz de metas y colchón de emergencia |
 | `avisos.py` | Recordatorios y avisos (nunca a las 00:00) |
 | `datos.py`, `exportar.py` | Base de datos local, copias y Excel |
 | `autenticacion.py`, `configurar.py`, `banco.py`, `consultas.py`, `contador.py` | N26, configuración y límite de consultas |
