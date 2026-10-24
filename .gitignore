@@ -24,4 +24,7 @@ ultima_consulta.txt
 version.txt
 version_anunciada.txt
 diagnostico.txt
+datos.db
+datos.db-journal
+copias/
 *.tmp

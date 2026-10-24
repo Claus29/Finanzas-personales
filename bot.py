@@ -1,244 +1,998 @@
-"""Bot de Telegram para ver el saldo de N26.
+"""Bot de Telegram de finanzas personales (v5).
 
-- Botón «💰 Ver saldo»: consulta el saldo cuando quieras (cuenta en el límite diario).
-- Botón «⚙️ Ajustes»: límite de consultas al día, hora del saldo automático y activarlo o no.
-- Saldo automático cada día a la hora elegida (00:00 por defecto). Si a esa hora el ordenador
-  estaba apagado o sin internet, se envía en cuanto vuelve (una sola vez al día).
-Solo habla con TELEGRAM_CHAT_ID. Lo arranca principal.py, que lo vuelve a lanzar tras renovar
-el permiso del banco cuando ejecutar() devuelve "reautenticar".
+- El banco solo se consulta en la actualización diaria (00:00 por defecto, en silencio) o con
+  «Actualizar ahora» en Ajustes. Todos los botones calculan al momento con esos datos.
+- Teclado: 💰 Saldo · 📊 Análisis · 💳 Deudas · 🎯 Metas · ⏰ Recordatorios · ⚙️ Ajustes.
+- Avisos (avisos.py) revisados cada minuto; nunca a las 00:00.
+- Si el permiso de N26 caduca, el bot sigue funcionando con los últimos datos y la ventana pide
+  renovarlo en segundo plano.
+Solo habla con TELEGRAM_CHAT_ID. Lo arranca principal.py.
 """
 import asyncio
+import html
 import logging
-from datetime import time, timedelta
+from datetime import date, datetime, time, timedelta
 
 import requests
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, Update
 from telegram.error import BadRequest
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
+import actualizacion
+import analisis
+import autenticacion
+import avisos
+import ciclo
 import config
 import consultas
 import contador
+import datos
+import deudas
+import exportar
+import graficos
+import metas
+import movimientos
+from formato import (DIAS_SEMANA, euros, euros_cortos, fecha_corta, leer_entero, leer_fecha, leer_hora, leer_importe,
+                     leer_mes, sumar_meses)
+from movimientos import CATEGORIAS
 
 # Súbelo y cambia NOVEDADES en cada actualización con cambios visibles: el bot las anuncia una vez.
-VERSION = 4
-NOVEDADES = ("✨ <b>Bot actualizado</b>\n\n"
-             "• «💰 Ver saldo»: tu saldo cuando quieras, con el nombre de cada cuenta.\n"
-             "• «⚙️ Ajustes»: límite de consultas al día (4 por defecto), hora del saldo automático "
-             "y activarlo o desactivarlo.\n"
-             "• Cada respuesta te dice cuántas consultas llevas hoy.")
+VERSION = 5
+NOVEDADES = ("✨ <b>Bot actualizado: versión 5</b>\n\n"
+             "• El banco se consulta <b>una vez al día, a las 00:00 y en silencio</b> (saldos y movimientos de tus "
+             "3 cuentas). Los botones ya no gastan consultas.\n"
+             "• 💰 <b>Saldo</b>: total de tus cuentas, saldo neto y cuánto puedes gastar al día.\n"
+             "• 📊 <b>Análisis</b>: ciclo, presupuesto, categorías, evolución, semana y suscripciones.\n"
+             "• 💳 <b>Deudas</b>: pagos únicos, al cobrar, a plazos, fijos y lo que te deben, con recordatorios y aplazamientos.\n"
+             "• 🎯 <b>Metas</b> de ahorro con barra de progreso.\n"
+             "• ⏰ <b>Recordatorios</b>: el del cobro insiste hasta que lo registres, y puedes crear los tuyos.\n"
+             "• ⚙️ <b>Ajustes</b>: hora de actualización, días de cobro, presupuesto, avisos, exportar a Excel.")
 VERSION_ANUNCIADA = config.BASE / "version_anunciada.txt"
 
-BOTON_SALDO = "💰 Ver saldo"
-BOTON_AJUSTES = "⚙️ Ajustes"
-TECLADO = ReplyKeyboardMarkup([[KeyboardButton(BOTON_SALDO), KeyboardButton(BOTON_AJUSTES)]],
+B_SALDO, B_ANALISIS, B_DEUDAS, B_METAS, B_RECORDATORIOS, B_AJUSTES = (
+    "💰 Saldo", "📊 Análisis", "💳 Deudas", "🎯 Metas", "⏰ Recordatorios", "⚙️ Ajustes")
+BOTONES_VIEJOS = {"💰 Ver saldo": B_SALDO}  # teclados de versiones anteriores que aún tenga el móvil
+TECLADO = ReplyKeyboardMarkup([[KeyboardButton(B_SALDO), KeyboardButton(B_ANALISIS)],
+                               [KeyboardButton(B_DEUDAS), KeyboardButton(B_METAS)],
+                               [KeyboardButton(B_RECORDATORIOS), KeyboardButton(B_AJUSTES)]],
                               resize_keyboard=True, is_persistent=True)
-COMPROBAR_CADA = 30 * 60  # segundos entre comprobaciones de "¿se envió ya el saldo automático de hoy?"
-# Si se pulsa «Ver saldo» varias veces seguidas, se repite el último saldo sin gastar consulta.
-REUTILIZAR_SALDO = timedelta(minutes=10)
-AVISO_PERMISO = ("⚠️ <b>El permiso de N26 ha caducado o se ha desvinculado.</b>\n"
-                 "Ve al ordenador: la ventana «Bot Finanzas» te guiará para renovarlo.\n"
-                 "(Si desvinculaste la cuenta en Enable Banking, pulsa antes «Link accounts» en tu aplicación.)")
+AVISOS_CONFIGURABLES = [
+    ("AVISO_DEUDAS", "💳 Pagos de deudas y cuotas"),
+    ("AVISO_METAS", "🎯 Apartar para las metas"),
+    ("AVISO_RESUMEN_SEMANAL", "📅 Resumen semanal (domingo 20:00)"),
+    ("AVISO_RESUMEN_CICLO", "📆 Resumen del ciclo al cobrar"),
+    ("AVISO_SALDO_BAJO", "⚠️ Saldo neto bajo"),
+    ("AVISO_RITMO", "📉 Ritmo de gasto"),
+    ("AVISO_GASTO_GRANDE", "💸 Gasto grande"),
+    ("AVISO_SUSCRIPCIONES", "🔍 Revisar suscripciones (día 1)"),
+]
+COMPROBAR_ACTUALIZACION = 10 * 60
+COMPROBAR_PERMISO = 60 * 60
 
-estado = {"chat_id": None, "motivo_parada": None}
-candado_banco = asyncio.Lock()       # nunca dos consultas al banco a la vez
-candado_automatico = asyncio.Lock()  # la tarea de la hora fija y la de recuperación no se solapan
-
-
-# ---------- Consultas ----------
-
-async def consultar():
-    async with candado_banco:
-        return await asyncio.to_thread(consultas.consultar)
-
-
-async def pedir_reautenticacion(context: ContextTypes.DEFAULT_TYPE):
-    if estado["motivo_parada"]:
-        return
-    estado["motivo_parada"] = "reautenticar"
-    logging.warning("El permiso de N26 no es válido: hay que renovarlo")
-    await context.bot.send_message(estado["chat_id"], AVISO_PERMISO, parse_mode="HTML")
-    context.application.stop_running()
+estado = {"chat_id": None}
+candado_banco = asyncio.Lock()
+detalle = logging.getLogger("detalle")
 
 
-def hace(cuando):
-    minutos = int((config.ahora() - cuando).total_seconds() // 60)
-    return "hace menos de 1 minuto" if minutos < 1 else f"hace {minutos} min"
+def e(texto):
+    return html.escape(str(texto))
 
 
-async def ver_saldo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    responder = update.message.reply_text
-    cuando, cuerpo = consultas.ultimo_saldo()
-    if cuando and config.ahora() - cuando < REUTILIZAR_SALDO:
-        await responder(f"{cuerpo}\n<i>(Saldo de {hace(cuando)}: no gasta consulta)</i>\n\n{consultas.pie()}",
-                        parse_mode="HTML", reply_markup=TECLADO)
-        return
-    await update.message.chat.send_action("typing")
-    try:
-        cuerpo = await consultar()
-    except consultas.LimiteAlcanzado:
-        usadas, limite = contador.estado()
-        texto = (f"🚫 Has usado {usadas}/{limite} consultas de hoy. Se renuevan a las 00:00.\n"
-                 f"Puedes cambiar el límite en «{BOTON_AJUSTES}».")
-        if cuerpo:
-            texto += f"\n\nÚltimo saldo conocido ({hace(cuando)}):\n{cuerpo}"
-        await responder(texto, parse_mode="HTML", reply_markup=TECLADO)
-        logging.info("Límite diario alcanzado (%s/%s)", usadas, limite)
-        return
-    except consultas.PermisoCaducado:
-        await pedir_reautenticacion(context)
-        return
-    except (requests.ConnectionError, requests.Timeout):
-        await responder("📡 No hay conexión con el banco. Prueba en un rato (no ha gastado consulta).",
-                        reply_markup=TECLADO)
-        return
-    except Exception as e:
-        logging.getLogger("detalle").exception("Fallo al consultar el saldo")
-        logging.warning("No se ha podido consultar el saldo: %s", e)
-        await responder(f"{consultas.texto_error(e)}\n\n{consultas.pie()}", parse_mode="HTML", reply_markup=TECLADO)
-        return
-    await responder(f"{cuerpo}\n\n{consultas.pie()}", parse_mode="HTML", reply_markup=TECLADO)
-    logging.info("Saldo enviado (botón) · consultas hoy %s/%s", *contador.estado())
+def teclado(filas):
+    return InlineKeyboardMarkup([[InlineKeyboardButton(t, callback_data=d) for t, d in fila] for fila in filas])
 
 
-async def saldo_automatico(context: ContextTypes.DEFAULT_TYPE):
-    async with candado_automatico:
-        if not config.saldo_diario_activo() or estado["motivo_parada"]:
-            return
-        horas, minutos = config.hora_saldo_diario()
-        momento = config.ahora()
-        if momento < momento.replace(hour=horas, minute=minutos, second=0, microsecond=0):
-            return
-        if config.ULTIMO_ENVIO_AUTOMATICO.exists() and \
-                config.ULTIMO_ENVIO_AUTOMATICO.read_text().strip() == config.hoy():
-            return
+CANCELAR = [("❌ Cancelar", "cancelar")]
+
+
+async def mostrar(update: Update, context, texto, filas=None, nuevo=False):
+    """Edita el mensaje del botón pulsado (si se puede) o envía uno nuevo."""
+    marcado = teclado(filas) if filas else None
+    consulta = update.callback_query
+    if consulta and not nuevo and consulta.message and consulta.message.text:
         try:
-            cuerpo = await consultar()
-        except (requests.ConnectionError, requests.Timeout):
-            logging.warning("Sin conexión para el saldo automático; reintento en %s min", COMPROBAR_CADA // 60)
+            await consulta.edit_message_text(texto, parse_mode="HTML", reply_markup=marcado)
             return
-        except consultas.PermisoCaducado:
-            await pedir_reautenticacion(context)
-            return
-        except consultas.LimiteAlcanzado:
-            texto = "🚫 Saldo automático: ya has usado todas las consultas de hoy."
-        except Exception as e:
-            logging.getLogger("detalle").exception("Fallo en el saldo automático")
-            logging.warning("No se ha podido consultar el saldo automático: %s", e)
-            texto = consultas.texto_error(e)
-        else:
-            texto = f"🕛 <b>Saldo automático</b>\n{cuerpo}"
-        config.ULTIMO_ENVIO_AUTOMATICO.write_text(config.hoy())
-        await context.bot.send_message(estado["chat_id"], f"{texto}\n\n{consultas.pie()}",
-                                       parse_mode="HTML", reply_markup=TECLADO)
-        logging.info("Saldo automático enviado")
+        except BadRequest as error:
+            if "not modified" in str(error).lower():
+                return
+    await context.bot.send_message(estado["chat_id"], texto, parse_mode="HTML",
+                                   reply_markup=marcado or (TECLADO if not filas else None))
 
 
-def programar_saldo_automatico(job_queue):
-    for tarea in job_queue.get_jobs_by_name("saldo_automatico"):
-        tarea.schedule_removal()
-    horas, minutos = config.hora_saldo_diario()
-    job_queue.run_daily(saldo_automatico, time=time(horas, minutos, tzinfo=config.zona()), name="saldo_automatico")
+async def enviar(context, texto, filas=None):
+    await context.bot.send_message(estado["chat_id"], texto, parse_mode="HTML",
+                                   reply_markup=teclado(filas) if filas else None)
 
 
-# ---------- Ajustes ----------
+def esperar(context, paso, **datos_paso):
+    context.user_data["espera"] = {"paso": paso, **datos_paso}
 
-def boton(texto, datos):
-    return InlineKeyboardButton(texto, callback_data=datos)
+
+def con_deshacer(accion_id, filas=None):
+    return (filas or []) + [[("↩️ Deshacer", f"des:{accion_id}")]]
+
+
+# =====================================================================
+# Pantallas
+# =====================================================================
+
+async def pantalla_saldo(update, context, nuevo=False):
+    await mostrar(update, context, analisis.texto_saldo(),
+                  [[("🧮 Saldo neto", "m:neto"), ("💶 Registrar cobro", "cobro:nuevo")],
+                   [("🧾 Movimientos", "m:movs"), ("📈 Evolución", "a:evo:30")]], nuevo)
+
+
+async def pantalla_analisis(update, context, nuevo=False):
+    await mostrar(update, context, "📊 <b>Análisis</b>\nTodo calculado con tus datos de "
+                                   f"{analisis.texto_actualizado().lower().replace('actualizado ', '')}. ¿Qué quieres ver?",
+                  [[("📆 Ciclo actual", "a:ciclo"), ("🎯 Presupuesto", "a:pres")],
+                   [("🧩 Categorías", "a:cat:ciclo"), ("📈 Evolución", "a:evo:30")],
+                   [("📅 Semana", "a:sem"), ("🔁 Suscripciones", "a:subs")],
+                   [("🏷️ Corregir una categoría", "a:corregir")]], nuevo)
+
+
+async def pantalla_deudas(update, context, nuevo=False):
+    filas = [[("➕ Nueva", "d:nueva"), ("✅ Marcar pagado", "d:pagar")]]
+    lista = deudas.activas()
+    for n in range(0, len(lista), 2):
+        filas.append([(f"{deudas.TIPOS[d['tipo']].split(' ')[0]} {d['nombre'][:18]}", f"d:ver:{d['id']}")
+                      for d in lista[n:n + 2]])
+    await mostrar(update, context, analisis.texto_deudas(), filas, nuevo)
+
+
+async def pantalla_metas(update, context, nuevo=False):
+    filas = [[("➕ Nueva meta", "g:nueva")]]
+    filas += [[(f"🎯 {m['nombre'][:25]}", f"g:ver:{m['id']}")] for m in metas.activas()]
+    await mostrar(update, context, analisis.texto_metas(), filas, nuevo)
+
+
+async def pantalla_recordatorios(update, context, nuevo=False):
+    propios = datos.todos("SELECT * FROM recordatorios WHERE activo >= 0 AND (activo = 1 OR frecuencia != 'una') ORDER BY id")
+    desde, hasta = config.dias_cobro()
+    lineas = ["⏰ <b>Recordatorios</b>", "",
+              f"💶 Cobro: desde el día {desde}, insistiendo hasta que lo registres (siempre activo)"]
+    lineas += [f"{'🔔' if config.aviso_activo(c) else '🔕'} {n}" for c, n in AVISOS_CONFIGURABLES]
+    lineas.append("<i>(Los avisos automáticos se activan o desactivan en ⚙️ Ajustes › Avisos)</i>")
+    lineas += ["", "<b>Tus recordatorios:</b>"]
+    if propios:
+        lineas += [f"{'🔔' if r['activo'] else '🔕'} {e(r['texto'])} · {avisos.describir_recordatorio(r)}" for r in propios]
+    else:
+        lineas.append("Aún no tienes. Crea uno con «➕ Nuevo» (por ejemplo: «Pagar la tarjeta» el día 25).")
+    filas = [[("➕ Nuevo", "r:nuevo")]]
+    filas += [[(f"{'🔕 Pausar' if r['activo'] else '🔔 Activar'} «{r['texto'][:15]}»", f"r:tog:{r['id']}"),
+               ("🗑️", f"r:bo:{r['id']}")] for r in propios]
+    await mostrar(update, context, "\n".join(lineas), filas, nuevo)
 
 
 def texto_ajustes():
     usadas, limite = contador.estado()
     horas, minutos = config.hora_saldo_diario()
-    activo = "activado" if config.saldo_diario_activo() else "desactivado"
-    texto = (f"⚙️ <b>Ajustes</b>\n\n"
-             f"🔢 Consultas hoy: {usadas}/{limite} (se reinician a las 00:00)\n"
-             f"📊 Límite diario: {limite} consultas\n"
-             f"⏰ Saldo automático: {horas:02d}:{minutos:02d} ({activo})")
+    desde, hasta = config.dias_cobro()
+    presupuesto = config.importe("PRESUPUESTO_CICLO")
+    umbral = config.importe("UMBRAL_SALDO_BAJO")
+    texto = ("⚙️ <b>Ajustes</b>\n\n"
+             f"🔄 Actualización con el banco: cada día a las <b>{horas:02d}:{minutos:02d}</b> (en silencio)\n"
+             f"🔢 Consultas al banco hoy: {usadas}/{limite} (límite diario, también para «Actualizar ahora»)\n"
+             f"💶 Cobro: entre el día <b>{desde}</b> y el <b>{hasta}</b>\n"
+             f"🎯 Presupuesto por ciclo: {euros_cortos(presupuesto) if presupuesto else 'sin límite'}\n"
+             f"⚠️ Aviso de saldo neto bajo: {('por debajo de ' + euros_cortos(umbral)) if umbral else 'desactivado'}")
     if limite > config.LIMITE_RECOMENDADO:
-        texto += (f"\n\n⚠️ Con más de {config.LIMITE_RECOMENDADO} consultas al día, "
-                  "N26 podría rechazar algunas.")
+        texto += f"\n\n⚠️ Con más de {config.LIMITE_RECOMENDADO} consultas al día, N26 podría rechazar algunas."
     return texto
 
 
-def teclado_ajustes():
-    limite = config.limite_diario()
+def filas_ajustes():
     horas, minutos = config.hora_saldo_diario()
-    activo = config.saldo_diario_activo()
-    return InlineKeyboardMarkup([
-        [boton("➖", "lim:-"), boton(f"Límite: {limite}/día", "nada"), boton("➕", "lim:+")],
-        [boton(f"⏰ Hora: {horas:02d}:{minutos:02d}", "hora"),
-         boton("🔔 Automático: sí" if activo else "🔕 Automático: no", "auto")],
-        [boton("✖️ Cerrar", "cerrar")],
-    ])
+    desde, hasta = config.dias_cobro()
+    return [[("➖", "aj:lim:-"), (f"Límite: {config.limite_diario()}/día", "nada"), ("➕", "aj:lim:+")],
+            [(f"⏰ Hora de actualización: {horas:02d}:{minutos:02d}", "aj:hora")],
+            [(f"💶 Días de cobro: {desde}–{hasta}", "aj:cobro")],
+            [("🎯 Presupuesto", "aj:pres"), ("⚠️ Saldo bajo", "aj:umbral")],
+            [("🔔 Avisos", "aj:avisos"), ("🔄 Actualizar ahora", "aj:act")],
+            [("📤 Exportar a Excel", "aj:exp"), ("✖️ Cerrar", "aj:cerrar")]]
 
 
-def teclado_horas():
-    filas = [[boton(f"{h:02d}", f"h:{h:02d}") for h in range(fila, fila + 6)] for fila in range(0, 24, 6)]
-    return InlineKeyboardMarkup(filas + [[boton("⬅️ Volver", "volver")]])
+async def pantalla_ajustes(update, context, nuevo=False):
+    await mostrar(update, context, texto_ajustes(), filas_ajustes(), nuevo)
 
 
-def teclado_minutos(horas):
-    return InlineKeyboardMarkup([[boton(f"{horas}:{m}", f"m:{horas}:{m}") for m in ("00", "15", "30", "45")],
-                                 [boton("⬅️ Volver", "hora")]])
+async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE, boton):
+    context.user_data.pop("espera", None)
+    pantallas = {B_SALDO: pantalla_saldo, B_ANALISIS: pantalla_analisis, B_DEUDAS: pantalla_deudas,
+                 B_METAS: pantalla_metas, B_RECORDATORIOS: pantalla_recordatorios, B_AJUSTES: pantalla_ajustes}
+    await pantallas[boton](update, context, nuevo=True)
 
 
-async def ajustes(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(texto_ajustes(), parse_mode="HTML", reply_markup=teclado_ajustes())
+async def inicio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.pop("espera", None)
+    await update.message.reply_text(
+        "✅ <b>Bot activo</b>\nUsa los botones de abajo. Tus datos se actualizan con el banco cada día a las "
+        f"{config.valor('HORA_SALDO_DIARIO')} en silencio; todo lo demás se calcula al momento.",
+        parse_mode="HTML", reply_markup=TECLADO)
 
 
-async def pulsar_ajuste(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# =====================================================================
+# Mensajes de texto (botones del teclado y respuestas a preguntas)
+# =====================================================================
+
+async def texto(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    escrito = update.message.text.strip()
+    boton = BOTONES_VIEJOS.get(escrito, escrito)
+    if boton in (B_SALDO, B_ANALISIS, B_DEUDAS, B_METAS, B_RECORDATORIOS, B_AJUSTES):
+        await menu(update, context, boton)
+        return
+    espera = context.user_data.get("espera")
+    if not espera:
+        await inicio(update, context)
+        return
+    await responder_pregunta(update, context, espera, escrito)
+
+
+async def repetir(update, mensaje):
+    await update.message.reply_text(f"❌ {mensaje}", parse_mode="HTML", reply_markup=teclado([CANCELAR]))
+
+
+async def responder_pregunta(update, context, espera, escrito):
+    paso = espera["paso"]
+    hoy = config.ahora().date()
+
+    # --- Cobro
+    if paso == "cobro_importe":
+        importe = leer_importe(escrito)
+        if not importe:
+            return await repetir(update, "Escribe solo el importe, por ejemplo <b>1850</b> o <b>1.850,50</b>.")
+        esperar(context, "cobro_tipo", importe=importe)
+        return await enviar(context, f"💶 {euros(importe)}. ¿Qué es?",
+                            [[("💶 Mi salario", "cobro:t:salario"), ("💰 Otro ingreso", "cobro:t:otro")], CANCELAR])
+    if paso == "cobro_fecha":
+        fecha = leer_fecha(escrito, hoy)
+        if not fecha or fecha > hoy:
+            return await repetir(update, "Escribe la fecha como <b>05/11</b> (no puede ser futura).")
+        return await guardar_cobro(update, context, espera["importe"], espera["tipo"], fecha)
+
+    # --- Deudas
+    if paso == "deuda_nombre":
+        esperar(context, "deuda_importe", tipo=espera["tipo"], nombre=escrito[:40])
+        pregunta = {"plazos": "¿Cuánto es <b>cada cuota</b>?", "fijo": "¿Cuánto pagas <b>cada mes</b>?",
+                    "me_deben": "¿Cuánto te debe?"}.get(espera["tipo"], "¿Cuánto es?")
+        return await enviar(context, f"💳 {e(escrito[:40])}\n{pregunta} (por ejemplo 50 o 49,90)", [CANCELAR])
+    if paso == "deuda_importe":
+        importe = leer_importe(escrito)
+        if not importe:
+            return await repetir(update, "Escribe solo el importe, por ejemplo <b>50</b> o <b>49,90</b>.")
+        datos_deuda = {**espera, "importe": importe}
+        tipo = espera["tipo"]
+        if tipo == "plazos":
+            esperar(context, "deuda_cuotas", **{k: v for k, v in datos_deuda.items() if k != "paso"})
+            return await enviar(context, "¿Cuántas cuotas te <b>quedan</b> por pagar? (contando la próxima)", [CANCELAR])
+        if tipo == "fijo":
+            esperar(context, "deuda_dia", **{k: v for k, v in datos_deuda.items() if k != "paso"})
+            return await enviar(context, "¿Qué <b>día del mes</b> se paga? (1-31)", [CANCELAR])
+        if tipo == "fecha":
+            esperar(context, "deuda_fecha", **{k: v for k, v in datos_deuda.items() if k != "paso"})
+            fin = sumar_meses(hoy, 0, 31)
+            return await enviar(context, "¿Para cuándo? Escribe la fecha (ej. <b>20/11</b>) o elige:",
+                                [[("Mañana", f"dnf:{(hoy + timedelta(days=1)).isoformat()}"),
+                                  ("En 1 semana", f"dnf:{(hoy + timedelta(days=7)).isoformat()}")],
+                                 [("A fin de mes", f"dnf:{fin.isoformat()}")], CANCELAR])
+        return await crear_deuda(update, context, datos_deuda)
+    if paso == "deuda_cuotas":
+        cuotas = leer_entero(escrito, 1, 360)
+        if not cuotas:
+            return await repetir(update, "Escribe un número de cuotas, por ejemplo <b>12</b>.")
+        esperar(context, "deuda_dia", **{**{k: v for k, v in espera.items() if k != "paso"}, "cuotas": cuotas})
+        return await enviar(context, "¿Qué <b>día del mes</b> se paga cada cuota? (1-31)", [CANCELAR])
+    if paso == "deuda_dia":
+        dia = leer_entero(escrito, 1, 31)
+        if not dia:
+            return await repetir(update, "Escribe un día del 1 al 31.")
+        datos_deuda = {**{k: v for k, v in espera.items() if k != "paso"}, "dia": dia}
+        if dia < hoy.day:
+            esperar(context, "deuda_mes", **datos_deuda)
+            return await enviar(context, f"El día {dia} de este mes ya ha pasado. ¿Ya pagaste el de este mes?",
+                                [[("✅ Ya lo pagué", "dnm:siguiente"), ("❌ Aún no", "dnm:este")], CANCELAR])
+        return await crear_deuda(update, context, {**datos_deuda, "desde": f"{hoy:%Y-%m}"})
+    if paso == "deuda_fecha":
+        fecha = leer_fecha(escrito, hoy)
+        if not fecha:
+            return await repetir(update, "Escribe la fecha como <b>20/11</b> o <b>20/11/2026</b>.")
+        return await crear_deuda(update, context, {**espera, "fecha": fecha.isoformat()})
+    if paso == "deuda_parte":
+        importe = leer_importe(escrito)
+        deuda = deudas.obtener(espera["deuda"])
+        if not importe or importe > deuda["importe"]:
+            return await repetir(update, f"Escribe cuánto has pagado (como mucho {euros(deuda['importe'])}).")
+        context.user_data.pop("espera", None)
+        resultado, accion = deudas.pagar(deuda["id"], "unico", importe)
+        return await enviar(context, f"✅ {e(deuda['nombre'])}: {e(resultado)} €.", con_deshacer(accion))
+    if paso == "deuda_aplazar":
+        fecha = leer_fecha(escrito, hoy)
+        if not fecha or fecha <= hoy:
+            return await repetir(update, "Escribe una fecha futura, por ejemplo <b>28/11</b>.")
+        context.user_data.pop("espera", None)
+        resultado = deudas.aplazar(espera["deuda"], espera["periodo"], nueva_fecha=fecha)
+        return await enviar(context, f"📅 {e(deudas.obtener(espera['deuda'])['nombre'])}: {resultado}.")
+    if paso == "deuda_editar":
+        deuda = deudas.obtener(espera["deuda"])
+        campo = espera["campo"]
+        if campo in ("importe", "cuota"):
+            valor = leer_importe(escrito)
+        elif campo == "dia":
+            valor = leer_entero(escrito, 1, 31)
+        elif campo == "fecha":
+            fecha = leer_fecha(escrito, hoy)
+            valor = fecha.isoformat() if fecha else None
+        else:
+            valor = escrito[:40]
+        if not valor:
+            return await repetir(update, "No lo he entendido, prueba otra vez.")
+        context.user_data.pop("espera", None)
+        deudas.cambiar(deuda["id"], campo, valor)
+        await enviar(context, "✅ Cambiado.")
+        return await ver_deuda(update, context, deuda["id"], nuevo=True)
+
+    # --- Metas
+    if paso == "meta_nombre":
+        esperar(context, "meta_objetivo", nombre=escrito[:40])
+        return await enviar(context, f"🎯 {e(escrito[:40])}\n¿Cuánto quieres ahorrar? (ej. 2000)", [CANCELAR])
+    if paso == "meta_objetivo":
+        importe = leer_importe(escrito)
+        if not importe:
+            return await repetir(update, "Escribe el objetivo, por ejemplo <b>2000</b>.")
+        esperar(context, "meta_fecha", nombre=espera["nombre"], objetivo=importe)
+        return await enviar(context, "¿Para cuándo? Escribe el mes, por ejemplo <b>agosto 2027</b> o <b>08/2027</b>.",
+                            [CANCELAR])
+    if paso == "meta_fecha":
+        fecha = leer_mes(escrito, hoy)
+        if not fecha:
+            return await repetir(update, "Escribe un mes futuro, por ejemplo <b>agosto 2027</b> o <b>08/2027</b>.")
+        esperar(context, "meta_seguimiento", nombre=espera["nombre"], objetivo=espera["objetivo"], fecha=fecha.isoformat())
+        filas = [[("✍️ Lo apunto yo (aportaciones)", "gs:manual")]]
+        filas += [[(f"🔗 Es el saldo de {c['nombre'][:22]}", f"gs:cuenta:{n}")] for n, c in enumerate(consultas.cuentas())]
+        return await enviar(context, "¿Cómo sigo el progreso?\n• <b>Vinculada a una cuenta</b> (ej. un Espacio de N26): "
+                                     "lo ahorrado es su saldo, se actualiza solo.\n• <b>Manual</b>: me dices lo que vas apartando.",
+                            filas + [CANCELAR])
+    if paso == "meta_inicial":
+        importe = 0.0 if escrito.strip() in ("0", "0,00", "nada") else leer_importe(escrito)
+        if importe is None:
+            return await repetir(update, "Escribe cuánto llevas ya ahorrado (0 si nada).")
+        return await crear_meta(update, context, espera, uid=None, inicial=importe)
+    if paso in ("meta_aportar", "meta_retirar"):
+        importe = leer_importe(escrito)
+        if not importe:
+            return await repetir(update, "Escribe el importe, por ejemplo <b>100</b>.")
+        context.user_data.pop("espera", None)
+        return await aportar_meta(context, espera["meta"], importe if paso == "meta_aportar" else -importe)
+
+    # --- Recordatorios
+    if paso == "rec_texto":
+        esperar(context, "rec_frecuencia", texto=escrito[:120])
+        return await enviar(context, "¿Cada cuánto?", [[("Una vez", "rf:una"), ("Cada día", "rf:diaria")],
+                                                       [("Cada semana", "rf:semanal"), ("Cada mes", "rf:mensual")], CANCELAR])
+    if paso == "rec_fecha":
+        fecha = leer_fecha(escrito, hoy)
+        if not fecha or fecha < hoy:
+            return await repetir(update, "Escribe la fecha como <b>25/11</b>.")
+        esperar(context, "rec_hora", **{**{k: v for k, v in espera.items() if k != "paso"}, "fecha": fecha.isoformat()})
+        return await preguntar_hora(context, "rh")
+    if paso == "rec_dia_mes":
+        dia = leer_entero(escrito, 1, 31)
+        if not dia:
+            return await repetir(update, "Escribe un día del 1 al 31.")
+        esperar(context, "rec_hora", **{**{k: v for k, v in espera.items() if k != "paso"}, "dia_mes": dia})
+        return await preguntar_hora(context, "rh")
+    if paso == "rec_hora":
+        hora = leer_hora(escrito)
+        if not hora:
+            return await repetir(update, "Escribe la hora como <b>09:30</b>, o elige un botón.")
+        return await crear_recordatorio(context, espera, hora)
+
+    # --- Ajustes
+    if paso in ("aj_pres", "aj_umbral"):
+        importe = 0.0 if escrito.strip() == "0" else leer_importe(escrito)
+        if importe is None:
+            return await repetir(update, "Escribe un importe (0 para quitarlo).")
+        context.user_data.pop("espera", None)
+        config.guardar("PRESUPUESTO_CICLO" if paso == "aj_pres" else "UMBRAL_SALDO_BAJO", importe)
+        await enviar(context, "✅ Guardado.")
+        return await pantalla_ajustes(update, context, nuevo=True)
+
+    context.user_data.pop("espera", None)
+    await inicio(update, context)
+
+
+async def preguntar_hora(context, prefijo, texto="¿A qué hora? Elige o escribe (ej. <b>09:30</b>):"):
+    horas = [7, 8, 9, 10, 12, 14, 16, 18, 19, 20, 21, 22]
+    filas = [[(f"{h:02d}:00", f"{prefijo}:{h:02d}:00") for h in horas[n:n + 4]] for n in range(0, 12, 4)]
+    await enviar(context, texto, filas + [CANCELAR])
+
+
+# =====================================================================
+# Acciones
+# =====================================================================
+
+async def guardar_cobro(update, context, importe, tipo, fecha, movimiento_id=None):
+    context.user_data.pop("espera", None)
+    if not movimiento_id and tipo == "salario":
+        # Si el banco ya trajo ese ingreso, se enlaza para no proponerlo como nómina.
+        parecido = datos.uno("SELECT id FROM movimientos WHERE interno = 0 AND importe > 0 AND ABS(importe - ?) <= 1 "
+                             "AND fecha >= ? AND fecha <= ? ORDER BY fecha DESC LIMIT 1", importe,
+                             (fecha - timedelta(days=4)).isoformat(), (fecha + timedelta(days=4)).isoformat())
+        movimiento_id = parecido["id"] if parecido else None
+    anterior = ciclo.inicio(fecha - timedelta(days=1))
+    ingreso = datos.ejecutar("INSERT INTO ingresos (fecha, importe, tipo, movimiento_id, creado) VALUES (?, ?, ?, ?, ?)",
+                             fecha.isoformat(), importe, tipo, movimiento_id, config.ahora().isoformat())
+    accion = datos.registrar_accion("ingresos", ingreso, "DELETE FROM ingresos WHERE id = ?1",
+                                    f"Cobro de {euros(importe)}")
+    nombre = "Salario" if tipo == "salario" else "Ingreso"
+    await enviar(context, f"✅ {nombre} de <b>{euros(importe)}</b> registrado ({fecha:%d/%m}).", con_deshacer(accion))
+    logging.info("%s registrado: %s", nombre, euros(importe))
+    if tipo == "salario":
+        datos.ejecutar("DELETE FROM pospuestos WHERE clave = 'cobro'")
+        if config.aviso_activo("AVISO_RESUMEN_CICLO") and anterior < fecha:
+            await enviar(context, analisis.texto_resumen_ciclo_cerrado(anterior, fecha))
+        await enviar(context, analisis.texto_al_cobrar())
+
+
+async def crear_deuda(update, context, d):
+    context.user_data.pop("espera", None)
+    tipo, nombre, importe = d["tipo"], d["nombre"], d["importe"]
+    hoy = config.ahora().date()
+    if tipo == "plazos":
+        deuda_id, accion = deudas.crear(nombre, tipo, importe * d["cuotas"], cuota=importe, cuotas_total=d["cuotas"],
+                                        dia=d["dia"], desde=d["desde"])
+    elif tipo == "fijo":
+        deuda_id, accion = deudas.crear(nombre, tipo, importe, cuota=importe, dia=d["dia"], desde=d["desde"])
+    elif tipo == "fecha":
+        deuda_id, accion = deudas.crear(nombre, tipo, importe, fecha=d["fecha"])
+    elif tipo == "cobro":
+        # Se pagará con el próximo salario que registres (a partir de mañana si ya cobraste hoy).
+        deuda_id, accion = deudas.crear(nombre, tipo, importe, desde=(hoy + timedelta(days=1)).isoformat()
+                                        if ciclo.cobrado_este_mes(hoy) else hoy.isoformat())
+    else:
+        deuda_id, accion = deudas.crear(nombre, tipo, importe)
+    logging.info("Deuda creada: %s", nombre)
+    await enviar(context, f"✅ Guardado:\n{analisis.linea_deuda(deudas.obtener(deuda_id))}",
+                 con_deshacer(accion, [[("💳 Ver deudas", "m:deudas")]]))
+
+
+async def ver_deuda(update, context, deuda_id, nuevo=False):
+    deuda = deudas.obtener(deuda_id)
+    if not deuda or deuda["activa"] != 1:
+        return await mostrar(update, context, "Esa deuda ya no está activa.", [[("⬅️ Deudas", "m:deudas")]], nuevo)
+    proximo = deudas.proximo_pago(deuda)
+    per = proximo[1] if proximo else "unico"
+    filas = []
+    if deuda["tipo"] == "me_deben":
+        filas.append([("✅ Me lo ha pagado", f"dp:{deuda_id}:unico")])
+    else:
+        filas.append([("✅ Pagado", f"dp:{deuda_id}:{per}"), ("📅 Aplazar", f"da:{deuda_id}:{per}")])
+        if deuda["tipo"] in ("fecha", "cobro"):
+            filas.append([("💸 Pagué una parte", f"dparte:{deuda_id}")])
+    campos = {"plazos": [("✏️ Cuota", "cuota"), ("✏️ Día", "dia")], "fijo": [("✏️ Importe", "importe"), ("✏️ Día", "dia")],
+              "fecha": [("✏️ Importe", "importe"), ("✏️ Fecha", "fecha")]}.get(deuda["tipo"], [("✏️ Importe", "importe")])
+    filas.append([(t, f"de:{deuda_id}:{c}") for t, c in campos] + [("✏️ Nombre", f"de:{deuda_id}:nombre")])
+    filas.append([("🗑️ Borrar", f"dbo:{deuda_id}"), ("⬅️ Deudas", "m:deudas")])
+    await mostrar(update, context, analisis.texto_deuda(deuda), filas, nuevo)
+
+
+async def crear_meta(update, context, espera, uid, inicial=0.0):
+    context.user_data.pop("espera", None)
+    meta_id, accion = metas.crear(espera["nombre"], espera["objetivo"], date.fromisoformat(espera["fecha"]),
+                                  uid=uid, ya_ahorrado=inicial)
+    logging.info("Meta creada: %s", espera["nombre"])
+    await enviar(context, "✅ Meta creada:\n\n" + analisis.texto_meta(metas.obtener(meta_id)),
+                 con_deshacer(accion, [[("🎯 Ver metas", "m:metas")]]))
+
+
+async def aportar_meta(context, meta_id, importe):
+    accion, conseguida = metas.aportar(meta_id, importe)
+    meta = metas.obtener(meta_id)
+    p = metas.progreso(meta)
+    texto = (f"{'✅ Aportados' if importe > 0 else '➖ Retirados'} {euros(abs(importe))} a «{e(meta['nombre'])}».\n"
+             f"{analisis.barra(p['fraccion'])} {p['fraccion']:.0%}  {euros_cortos(p['ahorrado'])} / {euros_cortos(p['objetivo'])}")
+    if conseguida:
+        texto += f"\n\n🎉🎉 <b>¡Meta conseguida!</b> Has ahorrado {euros(p['objetivo'])} para «{e(meta['nombre'])}»."
+    await enviar(context, texto, con_deshacer(accion))
+
+
+async def crear_recordatorio(context, espera, hora):
+    context.user_data.pop("espera", None)
+    rec_id = datos.ejecutar("INSERT INTO recordatorios (texto, frecuencia, fecha, dia_semana, dia_mes, hora, creado) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?)", espera["texto"], espera["frecuencia"], espera.get("fecha"),
+                            espera.get("dia_semana"), espera.get("dia_mes"), hora, config.ahora().isoformat())
+    accion = datos.registrar_accion("recordatorios", rec_id, "DELETE FROM recordatorios WHERE id = ?1", "Recordatorio")
+    r = datos.uno("SELECT * FROM recordatorios WHERE id = ?", rec_id)
+    await enviar(context, f"✅ Te recordaré «{e(r['texto'])}» {avisos.describir_recordatorio(r)}.",
+                 con_deshacer(accion, [[("⏰ Ver recordatorios", "m:rec")]]))
+
+
+# =====================================================================
+# Botones (callback)
+# =====================================================================
+
+async def pulsar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     consulta = update.callback_query
     if update.effective_chat.id != estado["chat_id"]:
         await consulta.answer()
         return
-    datos = consulta.data
+    dato = consulta.data
     aviso = None
-    texto, teclado = texto_ajustes, teclado_ajustes
-    if datos in ("lim:-", "lim:+"):
-        actual = config.limite_diario()
-        nuevo = min(config.LIMITE_MAX, max(config.LIMITE_MIN, actual + (1 if datos == "lim:+" else -1)))
-        if nuevo == actual:
-            aviso = f"El límite va de {config.LIMITE_MIN} a {config.LIMITE_MAX}"
+    try:
+        aviso = await atender_boton(update, context, dato)
+    finally:
+        try:
+            await consulta.answer(aviso)
+        except BadRequest:
+            pass
+
+
+async def atender_boton(update, context, dato):  # noqa: C901  (enrutador de botones)
+    partes = dato.split(":")
+    clave = partes[0]
+    hoy = config.ahora().date()
+
+    if dato == "nada":
+        return None
+    if dato == "cancelar":
+        context.user_data.pop("espera", None)
+        await mostrar(update, context, "Cancelado.")
+        return None
+    if clave in ("des", "desl"):
+        descripcion = datos.deshacer(int(partes[1]), minutos=10 if clave == "des" else 4320)
+        if descripcion:
+            await mostrar(update, context, f"↩️ Deshecho: {e(descripcion)}.")
+            return "Deshecho"
+        return "Ya no se puede deshacer"
+
+    # --- Menús
+    if clave == "m":
+        pantallas = {"saldo": pantalla_saldo, "deudas": pantalla_deudas, "metas": pantalla_metas,
+                     "rec": pantalla_recordatorios, "ajustes": pantalla_ajustes, "analisis": pantalla_analisis}
+        if partes[1] in pantallas:
+            await pantallas[partes[1]](update, context)
+        elif partes[1] == "neto":
+            await mostrar(update, context, analisis.texto_neto(), [[("⬅️ Saldo", "m:saldo")]])
+        elif partes[1] == "movs":
+            await mostrar(update, context, analisis.texto_movimientos(12),
+                          [[("🏷️ Corregir una categoría", "a:corregir")], [("⬅️ Saldo", "m:saldo")]])
+        return None
+
+    # --- Análisis
+    if clave == "a":
+        volver = [[("⬅️ Análisis", "m:analisis")]]
+        if partes[1] == "ciclo":
+            await mostrar(update, context, analisis.texto_ciclo(), volver)
+        elif partes[1] == "pres":
+            await mostrar(update, context, analisis.texto_presupuesto(), [[("✏️ Cambiar presupuesto", "aj:pres")]] + volver)
+        elif partes[1] == "sem":
+            await mostrar(update, context, analisis.texto_semana(), volver)
+        elif partes[1] == "subs":
+            await mostrar(update, context, analisis.texto_suscripciones(), volver)
+        elif partes[1] == "cat":
+            dias = None if partes[2] == "ciclo" else int(partes[2])
+            await enviar_categorias(context, dias)
+        elif partes[1] == "evo":
+            await enviar_evolucion(context, int(partes[2]))
+        elif partes[1] == "corregir":
+            filas = [[(f"{m['fecha'][8:10]}/{m['fecha'][5:7]} {(m['contraparte'] or m['descripcion'] or '—')[:20]} "
+                       f"{euros_cortos(-m['importe'])}", f"cc:{m['fila']}")]
+                     for m in datos.todos("SELECT rowid AS fila, * FROM movimientos WHERE interno = 0 AND importe < 0 "
+                                          "ORDER BY fecha DESC, importado DESC LIMIT 8")]
+            await mostrar(update, context, "🏷️ ¿Qué gasto quieres cambiar de categoría?\n"
+                                           "<i>Lo recordaré para los gastos parecidos.</i>", filas + volver, nuevo=True)
+        return None
+    if clave == "cc":
+        m = datos.uno("SELECT rowid AS fila, * FROM movimientos WHERE rowid = ?", int(partes[1]))
+        cats = list(CATEGORIAS.items())
+        filas = [[(n, f"ccs:{partes[1]}:{c}") for c, n in cats[i:i + 2]] for i in range(0, len(cats), 2)]
+        await mostrar(update, context, f"🏷️ «{e(m['contraparte'] or m['descripcion'])}» ({euros(m['importe'])}) "
+                                       f"ahora está en {CATEGORIAS.get(m['categoria'], m['categoria'])}.\n¿Cuál es su categoría?",
+                      filas + [CANCELAR])
+        return None
+    if clave == "ccs":
+        m = datos.uno("SELECT * FROM movimientos WHERE rowid = ?", int(partes[1]))
+        cambiados = movimientos.cambiar_categoria(m["id"], partes[2])
+        await mostrar(update, context, f"✅ «{e(m['contraparte'] or m['descripcion'])}» ahora es {CATEGORIAS[partes[2]]}"
+                                       f"{f' (y {cambiados - 1} gastos parecidos)' if cambiados > 1 else ''}.")
+        return None
+
+    # --- Cobro
+    if clave == "cobro":
+        if partes[1] == "nuevo":
+            esperar(context, "cobro_importe")
+            await mostrar(update, context, "💶 ¿Cuánto has cobrado? Escribe el importe (ej. <b>1850</b>).", [CANCELAR], nuevo=True)
+        elif partes[1] == "aun":
+            datos.posponer("cobro", config.ahora() + timedelta(hours=3))
+            await mostrar(update, context, "⏰ Vale, te lo vuelvo a preguntar en 3 horas.")
+        elif partes[1] == "t":
+            espera = context.user_data.get("espera") or {}
+            if "importe" not in espera:
+                return "Empieza otra vez con «Registrar cobro»"
+            esperar(context, "cobro_fecha", importe=espera["importe"], tipo=partes[2])
+            await mostrar(update, context, "¿Cuándo lo cobraste?",
+                          [[("Hoy", "cobro:f:0"), ("Ayer", "cobro:f:1"), ("Anteayer", "cobro:f:2")],
+                           [("✍️ Otra fecha (escríbela)", "nada")], CANCELAR])
+        elif partes[1] == "f":
+            espera = context.user_data.get("espera") or {}
+            if "importe" not in espera:
+                return "Empieza otra vez con «Registrar cobro»"
+            await guardar_cobro(update, context, espera["importe"], espera["tipo"], hoy - timedelta(days=int(partes[2])))
+        return None
+    if clave == "nom":
+        m = datos.uno("SELECT * FROM movimientos WHERE rowid = ?", int(partes[2]))
+        if not m:
+            return "Ese movimiento ya no existe"
+        if partes[1] == "si":
+            await guardar_cobro(update, context, m["importe"], "salario", date.fromisoformat(m["fecha"]), m["id"])
         else:
-            config.guardar("LIMITE_CONSULTAS_DIA", nuevo)
-            logging.info("Límite diario cambiado a %s", nuevo)
-    elif datos == "auto":
-        config.guardar("SALDO_DIARIO_ACTIVO", "0" if config.saldo_diario_activo() else "1")
-        logging.info("Saldo automático %s", "activado" if config.saldo_diario_activo() else "desactivado")
-    elif datos == "hora":
-        texto, teclado = (lambda: "⏰ ¿A qué hora quieres recibir el saldo automático?"), teclado_horas
-    elif datos.startswith("h:"):
-        horas = datos[2:]
-        texto, teclado = (lambda: f"⏰ Elige los minutos ({horas}:..):"), (lambda: teclado_minutos(horas))
-    elif datos.startswith("m:"):
-        nueva = datos[2:]
-        config.guardar("HORA_SALDO_DIARIO", nueva)
-        programar_saldo_automatico(context.job_queue)
-        aviso = f"Saldo automático a las {nueva}"
-        logging.info("Hora del saldo automático cambiada a %s", nueva)
-    elif datos == "cerrar":
-        await consulta.answer()
-        await consulta.message.delete()
+            datos.marcar_enviado(f"nomina_no:{m['id']}")
+            await mostrar(update, context, "Vale, no lo cuento como nómina. ¿Quieres registrar tu cobro a mano?",
+                          [[("💶 Registrar cobro", "cobro:nuevo")]])
+        return None
+
+    # --- Deudas
+    if clave == "d":
+        if partes[1] == "nueva":
+            filas = [[(n, f"dn:{t}")] for t, n in deudas.TIPOS.items()]
+            await mostrar(update, context, "💳 ¿Qué quieres apuntar?\n"
+                                           "• <b>Pago único</b>: una cantidad para una fecha.\n"
+                                           "• <b>Al cobrar</b>: la pagarás en cuanto cobres.\n"
+                                           "• <b>A plazos</b>: cuotas mensuales (préstamo, móvil...).\n"
+                                           "• <b>Fijo mensual</b>: alquiler, gimnasio...\n"
+                                           "• <b>Me deben</b>: dinero que te tienen que devolver.", filas + [CANCELAR])
+        elif partes[1] == "ver":
+            await ver_deuda(update, context, int(partes[2]))
+        elif partes[1] == "pagar":
+            items = deudas.pendientes()
+            filas = [[(f"{i['deuda']['nombre'][:20]} {euros_cortos(i['importe'])} ({fecha_corta(i['vence'])})",
+                       f"dp:{i['deuda']['id']}:{i['periodo']}")] for i in items]
+            texto = "✅ ¿Qué has pagado?" if items else "No tienes pagos pendientes en este ciclo ✅"
+            await mostrar(update, context, texto, filas + [[("⬅️ Deudas", "m:deudas")]])
+        return None
+    if clave == "dn":
+        esperar(context, "deuda_nombre", tipo=partes[1])
+        ejemplo = {"fecha": "Juan", "cobro": "Mamá", "plazos": "Móvil", "fijo": "Alquiler", "me_deben": "Pedro"}[partes[1]]
+        await mostrar(update, context, f"{deudas.TIPOS[partes[1]]}\n¿Qué nombre le pongo? (ej. <b>{ejemplo}</b>)", [CANCELAR])
+        return None
+    if clave == "dnf":
+        espera = context.user_data.get("espera") or {}
+        if espera.get("paso") != "deuda_fecha":
+            return "Empieza otra vez"
+        await crear_deuda(update, context, {**espera, "fecha": partes[1]})
+        return None
+    if clave == "dnm":
+        espera = context.user_data.get("espera") or {}
+        if espera.get("paso") != "deuda_mes":
+            return "Empieza otra vez"
+        mes = hoy if partes[1] == "este" else sumar_meses(hoy, 1, 1)
+        await crear_deuda(update, context, {**espera, "desde": f"{mes:%Y-%m}"})
+        return None
+    if clave == "dp":
+        deuda = deudas.obtener(int(partes[1]))
+        if not deuda or deuda["activa"] != 1:
+            return "Ya estaba marcada"
+        per = ":".join(partes[2:])
+        if per != "unico" and per in deudas.periodos_pagados(deuda["id"]):
+            return "Esa cuota ya estaba pagada"
+        resultado, accion = deudas.pagar(deuda["id"], per)
+        logging.info("Pago marcado: %s", deuda["nombre"])
+        await mostrar(update, context, f"✅ {e(deuda['nombre'])}: {e(resultado)}.", con_deshacer(accion))
+        return "Hecho"
+    if clave == "dm":
+        manana = datetime.combine(hoy + timedelta(days=1), time(9, 59), tzinfo=config.zona())
+        datos.posponer(f"deuda:{partes[1]}:{':'.join(partes[2:])}", manana)
+        await mostrar(update, context, "⏰ Te lo recuerdo mañana.")
+        return None
+    if clave == "da":
+        deuda = deudas.obtener(int(partes[1]))
+        per = ":".join(partes[2:])
+        filas = [[("+3 días", f"dap:{deuda['id']}:3:{per}"), ("+1 semana", f"dap:{deuda['id']}:7:{per}")],
+                 [("💶 Al próximo cobro", f"dap:{deuda['id']}:cobro:{per}")],
+                 [("✍️ Otra fecha", f"dap:{deuda['id']}:otra:{per}")], CANCELAR]
+        await mostrar(update, context, f"📅 ¿Hasta cuándo aplazas «{e(deuda['nombre'])}»?", filas)
+        return None
+    if clave == "dap":
+        deuda_id, opcion, per = int(partes[1]), partes[2], ":".join(partes[3:])
+        if opcion == "otra":
+            esperar(context, "deuda_aplazar", deuda=deuda_id, periodo=per)
+            await mostrar(update, context, "Escribe la nueva fecha (ej. <b>28/11</b>):", [CANCELAR])
+            return None
+        if opcion == "cobro":
+            resultado = deudas.aplazar(deuda_id, per, al_cobro=True)
+        else:
+            resultado = deudas.aplazar(deuda_id, per, nueva_fecha=hoy + timedelta(days=int(opcion)))
+        await mostrar(update, context, f"📅 {e(deudas.obtener(deuda_id)['nombre'])}: {resultado}.")
+        return None
+    if clave == "dparte":
+        esperar(context, "deuda_parte", deuda=int(partes[1]))
+        await mostrar(update, context, "💸 ¿Cuánto has pagado?", [CANCELAR], nuevo=True)
+        return None
+    if clave == "de":
+        esperar(context, "deuda_editar", deuda=int(partes[1]), campo=partes[2])
+        pregunta = {"importe": "el nuevo importe", "cuota": "la nueva cuota", "dia": "el nuevo día del mes (1-31)",
+                    "fecha": "la nueva fecha (ej. 20/11)", "nombre": "el nuevo nombre"}[partes[2]]
+        await mostrar(update, context, f"✏️ Escribe {pregunta}:", [CANCELAR], nuevo=True)
+        return None
+    if clave == "dbo":
+        deuda = deudas.obtener(int(partes[1]))
+        await mostrar(update, context, f"🗑️ ¿Borrar «{e(deuda['nombre'])}»?",
+                      [[("Sí, borrar", f"dbos:{deuda['id']}"), ("No", f"d:ver:{deuda['id']}")]])
+        return None
+    if clave == "dbos":
+        accion = deudas.borrar(int(partes[1]))
+        await mostrar(update, context, "🗑️ Borrada.", con_deshacer(accion, [[("💳 Ver deudas", "m:deudas")]]))
+        return None
+
+    # --- Metas
+    if clave == "g":
+        if partes[1] == "nueva":
+            esperar(context, "meta_nombre")
+            await mostrar(update, context, "🎯 ¿Cómo se llama tu meta? (ej. <b>Viaje a Japón</b>)", [CANCELAR], nuevo=True)
+        elif partes[1] == "ver":
+            meta = metas.obtener(int(partes[2]))
+            filas = []
+            if not meta["uid"]:
+                filas.append([("➕ Aportar", f"g:ap:{meta['id']}"), ("➖ Retirar", f"g:re:{meta['id']}")])
+            filas.append([("🗑️ Borrar", f"g:bo:{meta['id']}"), ("⬅️ Metas", "m:metas")])
+            await mostrar(update, context, analisis.texto_meta(meta), filas)
+        elif partes[1] in ("ap", "re"):
+            esperar(context, "meta_aportar" if partes[1] == "ap" else "meta_retirar", meta=int(partes[2]))
+            await mostrar(update, context, f"¿Cuánto {'aportas' if partes[1] == 'ap' else 'retiras'}?", [CANCELAR], nuevo=True)
+        elif partes[1] == "bo":
+            accion = metas.borrar(int(partes[2]))
+            await mostrar(update, context, "🗑️ Meta borrada.", con_deshacer(accion, [[("🎯 Ver metas", "m:metas")]]))
+        return None
+    if clave == "gs":
+        espera = context.user_data.get("espera") or {}
+        if espera.get("paso") != "meta_seguimiento":
+            return "Empieza otra vez"
+        if partes[1] == "manual":
+            esperar(context, "meta_inicial", **{k: v for k, v in espera.items() if k != "paso"})
+            await mostrar(update, context, "¿Cuánto llevas ya ahorrado para esta meta? (0 si nada)", [CANCELAR])
+        else:
+            cuenta = consultas.cuentas()[int(partes[2])]
+            await crear_meta(update, context, espera, uid=cuenta["uid"])
+        return None
+    if clave == "ma":
+        await aportar_meta(context, int(partes[1]), float(partes[2]))
+        return "Apuntado"
+    if clave == "mo":
+        esperar(context, "meta_aportar", meta=int(partes[1]))
+        await mostrar(update, context, "¿Cuánto has apartado?", [CANCELAR], nuevo=True)
+        return None
+
+    # --- Recordatorios
+    if clave == "r":
+        if partes[1] == "nuevo":
+            esperar(context, "rec_texto")
+            await mostrar(update, context, "⏰ ¿Qué te recuerdo? (ej. <b>Pagar la tarjeta</b>)", [CANCELAR], nuevo=True)
+        elif partes[1] == "tog":
+            datos.ejecutar("UPDATE recordatorios SET activo = 1 - activo WHERE id = ?", int(partes[2]))
+            await pantalla_recordatorios(update, context)
+        elif partes[1] == "bo":
+            datos.ejecutar("UPDATE recordatorios SET activo = -1 WHERE id = ?", int(partes[2]))
+            await pantalla_recordatorios(update, context)
+        return None
+    if clave == "rf":
+        espera = context.user_data.get("espera") or {}
+        if "texto" not in espera:
+            return "Empieza otra vez"
+        base = {"texto": espera["texto"], "frecuencia": partes[1]}
+        if partes[1] == "una":
+            esperar(context, "rec_fecha", **base)
+            await mostrar(update, context, "¿Qué día? (ej. <b>25/11</b>)", [CANCELAR])
+        elif partes[1] == "semanal":
+            esperar(context, "rec_dia_semana", **base)
+            filas = [[(DIAS_SEMANA[n].capitalize(), f"rd:{n}") for n in range(i, min(i + 4, 7))] for i in (0, 4)]
+            await mostrar(update, context, "¿Qué día de la semana?", filas + [CANCELAR])
+        elif partes[1] == "mensual":
+            esperar(context, "rec_dia_mes", **base)
+            await mostrar(update, context, "¿Qué día del mes? (1-31)", [CANCELAR])
+        else:
+            esperar(context, "rec_hora", **base)
+            await preguntar_hora(context, "rh")
+        return None
+    if clave == "rd":
+        espera = context.user_data.get("espera") or {}
+        esperar(context, "rec_hora", texto=espera.get("texto", ""), frecuencia="semanal", dia_semana=int(partes[1]))
+        await preguntar_hora(context, "rh")
+        return None
+    if clave == "rh":
+        espera = context.user_data.get("espera") or {}
+        if espera.get("paso") != "rec_hora":
+            return "Empieza otra vez"
+        await crear_recordatorio(context, espera, f"{partes[1]}:{partes[2]}")
+        return None
+
+    # --- Ajustes
+    if clave == "aj":
+        return await atender_ajuste(update, context, partes)
+    return None
+
+
+async def atender_ajuste(update, context, partes):
+    opcion = partes[1]
+    if opcion == "lim":
+        actual = config.limite_diario()
+        nuevo = min(config.LIMITE_MAX, max(config.LIMITE_MIN, actual + (1 if partes[2] == "+" else -1)))
+        if nuevo == actual:
+            return f"El límite va de {config.LIMITE_MIN} a {config.LIMITE_MAX}"
+        config.guardar("LIMITE_CONSULTAS_DIA", nuevo)
+        await pantalla_ajustes(update, context)
+    elif opcion == "hora":
+        filas = [[(f"{h:02d}:00", f"aj:h:{h:02d}") for h in range(fila, fila + 6)] for fila in range(0, 24, 6)]
+        await mostrar(update, context, "⏰ ¿A qué hora actualizo tus datos con el banco cada día? (en silencio)",
+                      filas + [[("⬅️ Ajustes", "m:ajustes")]])
+    elif opcion == "h":
+        await mostrar(update, context, f"⏰ Elige los minutos ({partes[2]}:..):",
+                      [[(f"{partes[2]}:{m}", f"aj:m:{partes[2]}:{m}") for m in ("00", "15", "30", "45")],
+                       [("⬅️ Volver", "aj:hora")]])
+    elif opcion == "m":
+        config.guardar("HORA_SALDO_DIARIO", f"{partes[2]}:{partes[3]}")
+        programar_actualizacion(context.job_queue)
+        logging.info("Hora de actualización cambiada a %s:%s", partes[2], partes[3])
+        await pantalla_ajustes(update, context)
+        return f"Actualización a las {partes[2]}:{partes[3]}"
+    elif opcion == "cobro":
+        filas = [[(str(n), f"aj:cd:{n}") for n in range(i, i + 5)] for i in (1, 6, 11, 16, 21)]
+        await mostrar(update, context, "💶 ¿Desde qué día del mes sueles cobrar? (el más pronto)",
+                      filas + [[("⬅️ Ajustes", "m:ajustes")]])
+    elif opcion == "cd":
+        desde = int(partes[2])
+        filas = [[(str(n), f"aj:ch:{desde}:{n}") for n in range(i, min(i + 5, 29))] for i in range(desde, 29, 5)]
+        await mostrar(update, context, f"💶 Desde el día {desde}. ¿Y como muy tarde?", filas[:4] + [[("⬅️ Volver", "aj:cobro")]])
+    elif opcion == "ch":
+        config.guardar("DIA_COBRO_DESDE", partes[2])
+        config.guardar("DIA_COBRO_HASTA", partes[3])
+        await pantalla_ajustes(update, context)
+        return f"Cobro entre el día {partes[2]} y el {partes[3]}"
+    elif opcion in ("pres", "umbral"):
+        esperar(context, f"aj_{opcion}")
+        pregunta = ("🎯 ¿Cuánto quieres gastar como máximo en cada ciclo (de cobro a cobro)? (0 para quitarlo)"
+                    if opcion == "pres" else "⚠️ ¿Por debajo de qué saldo neto te aviso? (0 para no avisar)")
+        await mostrar(update, context, pregunta, [CANCELAR], nuevo=True)
+    elif opcion == "avisos":
+        filas = [[(f"{'🔔' if config.aviso_activo(c) else '🔕'} {n}", f"aj:av:{c}")] for c, n in AVISOS_CONFIGURABLES]
+        await mostrar(update, context, "🔔 <b>Avisos automáticos</b>\nPulsa para activar o desactivar.\n"
+                                       "<i>El del cobro está siempre activo.</i>", filas + [[("⬅️ Ajustes", "m:ajustes")]])
+    elif opcion == "av":
+        config.guardar(partes[2], "0" if config.aviso_activo(partes[2]) else "1")
+        return await atender_ajuste(update, context, ["aj", "avisos"])
+    elif opcion == "act":
+        usadas, limite = contador.estado()
+        await mostrar(update, context, f"🔄 ¿Actualizar ahora tus datos con el banco?\nGasta 1 consulta de hoy "
+                                       f"(llevas {usadas}/{limite}).",
+                      [[("✅ Sí, actualizar", "aj:act_si"), ("❌ No", "m:ajustes")]])
+    elif opcion == "act_si":
+        await actualizar_ahora(update, context)
+    elif opcion == "exp":
+        archivo, nombre = exportar.excel()
+        await context.bot.send_document(estado["chat_id"], document=archivo, filename=nombre,
+                                        caption="📤 Todos tus datos: saldos, movimientos, cobros, deudas, pagos y metas.")
+    elif opcion == "cerrar":
+        await update.callback_query.message.delete()
+    return None
+
+
+async def actualizar_ahora(update, context):
+    await mostrar(update, context, "🔄 Actualizando con el banco...")
+    async with candado_banco:
+        try:
+            resultado = await asyncio.to_thread(actualizacion.actualizar)
+        except consultas.LimiteAlcanzado:
+            usadas, limite = contador.estado()
+            return await mostrar(update, context, f"🚫 Ya has usado {usadas}/{limite} consultas de hoy. "
+                                                  "Puedes subir el límite en Ajustes.", [[("⬅️ Ajustes", "m:ajustes")]])
+        except consultas.PermisoCaducado:
+            await permiso_caducado(context.application)
+            return await mostrar(update, context, "⚠️ El permiso de N26 no es válido. Ve al ordenador: la ventana del bot "
+                                                  "te guía para renovarlo.")
+        except (requests.ConnectionError, requests.Timeout):
+            return await mostrar(update, context, "📡 No hay conexión con el banco. Prueba en un rato (no ha gastado consulta).")
+        except Exception as error:
+            detalle.exception("Fallo al actualizar")
+            return await mostrar(update, context, consultas.texto_error(error))
+    await mostrar(update, context, f"✅ Actualizado: {euros(resultado['total'])} en {resultado['cuentas']} cuentas · "
+                                   f"{resultado['movimientos_nuevos']} movimientos nuevos.\n{consultas.pie()}",
+                  [[("💰 Ver saldo", "m:saldo")]])
+
+
+async def enviar_categorias(context, dias):
+    texto = analisis.texto_categorias(dias)
+    desde = config.ahora().date() - timedelta(days=dias - 1) if dias else ciclo.inicio()
+    lista = movimientos.por_categoria(desde, config.ahora().date() + timedelta(days=1))
+    filas = teclado([[("Este ciclo", "a:cat:ciclo"), ("30 días", "a:cat:30"), ("90 días", "a:cat:90")],
+                     [("🏷️ Corregir una categoría", "a:corregir"), ("⬅️ Análisis", "m:analisis")]])
+    if lista:
+        titulo = "Gastos por categoría · " + (f"últimos {dias} días" if dias else "este ciclo")
+        imagen = await asyncio.to_thread(graficos.categorias, [(CATEGORIAS.get(c, c), t) for c, t in lista], titulo)
+        await context.bot.send_photo(estado["chat_id"], photo=imagen, caption=texto[:1024], parse_mode="HTML",
+                                     reply_markup=filas)
+    else:
+        await context.bot.send_message(estado["chat_id"], texto, parse_mode="HTML", reply_markup=filas)
+
+
+async def enviar_evolucion(context, dias):
+    texto = analisis.texto_evolucion(dias)
+    serie = analisis.serie_saldo(dias)
+    filas = teclado([[("30 días", "a:evo:30"), ("90 días", "a:evo:90")], [("⬅️ Análisis", "m:analisis")]])
+    if len(serie) >= 2:
+        imagen = await asyncio.to_thread(graficos.evolucion, serie, f"Saldo total · últimos {dias} días")
+        await context.bot.send_photo(estado["chat_id"], photo=imagen, caption=texto, parse_mode="HTML", reply_markup=filas)
+    else:
+        await context.bot.send_message(estado["chat_id"], texto, parse_mode="HTML", reply_markup=filas)
+
+
+# =====================================================================
+# Tareas programadas
+# =====================================================================
+
+async def tarea_actualizacion(context: ContextTypes.DEFAULT_TYPE):
+    """Actualización diaria con el banco. Silenciosa: nunca envía mensajes."""
+    if candado_banco.locked() or not actualizacion.toca():
         return
-    await consulta.answer(aviso)
-    if datos == "nada":
+    async with candado_banco:
+        try:
+            await asyncio.to_thread(actualizacion.actualizar)
+        except consultas.PermisoCaducado:
+            await permiso_caducado(context.application)
+        except consultas.LimiteAlcanzado:
+            logging.warning("Actualización diaria: no quedan consultas hoy")
+            datos.marcar_enviado(f"actualizacion_sin_consultas:{config.hoy()}")
+        except (requests.ConnectionError, requests.Timeout):
+            logging.warning("Actualización diaria: sin conexión, reintento en %s min", COMPROBAR_ACTUALIZACION // 60)
+        except Exception as error:
+            detalle.exception("Fallo en la actualización diaria")
+            logging.warning("Actualización diaria fallida: %s", error)
+
+
+def programar_actualizacion(job_queue):
+    for tarea in job_queue.get_jobs_by_name("actualizacion"):
+        tarea.schedule_removal()
+    horas, minutos = config.hora_saldo_diario()
+    job_queue.run_daily(tarea_actualizacion, time=time(horas, minutos, 20, tzinfo=config.zona()), name="actualizacion")
+
+
+async def tarea_avisos(context: ContextTypes.DEFAULT_TYPE):
+    try:
+        pendientes = await asyncio.to_thread(avisos.calcular)
+    except Exception:
+        detalle.exception("Fallo calculando avisos")
+        return
+    for clave, texto_aviso, filas in pendientes:
+        try:
+            await enviar(context, texto_aviso, [[tuple(b) for b in fila] for fila in filas] or None)
+            avisos.enviado(clave)
+            logging.info("Aviso enviado: %s", clave.split(":")[0])
+        except Exception:
+            detalle.exception("No se ha podido enviar el aviso %s", clave)
+
+
+async def permiso_caducado(app):
+    datos.marcar_enviado("permiso_caducado")
+
+    def al_terminar(exito):
+        if exito:
+            datos.ejecutar("DELETE FROM enviados WHERE clave = 'permiso_caducado'")
+            avisar("✅ <b>N26 conectado de nuevo.</b> Tus datos ya se actualizan con normalidad.")
+
+    if autenticacion.en_segundo_plano(al_terminar):
+        logging.warning("El permiso de N26 no es válido: la ventana te guía para renovarlo")
+
+
+async def tarea_permiso(context: ContextTypes.DEFAULT_TYPE):
+    """Al arrancar y cada hora: si el permiso no es válido, pedir renovarlo (sin parar el bot)."""
+    if autenticacion.en_marcha():
         return
     try:
-        await consulta.edit_message_text(texto(), parse_mode="HTML", reply_markup=teclado())
-    except BadRequest as e:
-        if "not modified" not in str(e).lower():
-            raise
-
-
-# ---------- Otros ----------
-
-async def inicio(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "✅ <b>Bot activo</b>\n"
-        f"• «{BOTON_SALDO}»: tu saldo cuando quieras.\n"
-        f"• «{BOTON_AJUSTES}»: límite diario y saldo automático.\n\n" + consultas.pie(),
-        parse_mode="HTML", reply_markup=TECLADO)
+        valido = await asyncio.to_thread(autenticacion.permiso_valido)
+    except Exception as error:
+        logging.warning("No he podido comprobar el permiso de N26: %s", error)
+        return
+    if not valido:
+        await permiso_caducado(context.application)
 
 
 async def anunciar_novedades(context: ContextTypes.DEFAULT_TYPE):
@@ -254,7 +1008,7 @@ async def anunciar_novedades(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def error_no_controlado(update, context: ContextTypes.DEFAULT_TYPE):
-    logging.getLogger("detalle").error("Error no controlado", exc_info=context.error)
+    detalle.error("Error no controlado", exc_info=context.error)
     logging.warning("Error: %s", context.error)
 
 
@@ -263,37 +1017,40 @@ def crear_aplicacion(token):
 
 
 def ejecutar():
-    """Arranca el bot y bloquea hasta que se detiene. Devuelve "reautenticar" si hay que renovar el permiso."""
+    """Arranca el bot y bloquea hasta que se detiene."""
     config.cargar()
-    estado.update(chat_id=int(config.valor("TELEGRAM_CHAT_ID")), motivo_parada=None)
+    datos.iniciar()
+    estado["chat_id"] = int(config.valor("TELEGRAM_CHAT_ID"))
     app = crear_aplicacion(config.valor("TELEGRAM_TOKEN"))
     solo_yo = filters.Chat(chat_id=estado["chat_id"])
     app.add_handler(CommandHandler("start", inicio, filters=solo_yo))
-    app.add_handler(CommandHandler("saldo", ver_saldo, filters=solo_yo))
-    app.add_handler(CommandHandler("ajustes", ajustes, filters=solo_yo))
-    app.add_handler(MessageHandler(solo_yo & filters.Text([BOTON_SALDO]), ver_saldo))
-    app.add_handler(MessageHandler(solo_yo & filters.Text([BOTON_AJUSTES]), ajustes))
-    app.add_handler(CallbackQueryHandler(pulsar_ajuste))
-    app.add_handler(MessageHandler(solo_yo & ~filters.COMMAND, inicio))  # cualquier otra cosa: muestra los botones
+    app.add_handler(CommandHandler("cancelar", inicio, filters=solo_yo))
+    app.add_handler(CommandHandler("saldo", lambda u, c: menu(u, c, B_SALDO), filters=solo_yo))
+    app.add_handler(CommandHandler("ajustes", lambda u, c: menu(u, c, B_AJUSTES), filters=solo_yo))
+    app.add_handler(MessageHandler(solo_yo & filters.TEXT & ~filters.COMMAND, texto))
+    app.add_handler(CallbackQueryHandler(pulsar))
     app.add_error_handler(error_no_controlado)
-    app.job_queue.run_once(anunciar_novedades, when=3)
-    programar_saldo_automatico(app.job_queue)
-    app.job_queue.run_repeating(saldo_automatico, interval=COMPROBAR_CADA, first=20, name="recuperar_saldo")
+    cola = app.job_queue
+    cola.run_once(anunciar_novedades, when=3)
+    cola.run_once(tarea_permiso, when=5)
+    cola.run_repeating(tarea_permiso, interval=COMPROBAR_PERMISO, first=COMPROBAR_PERMISO, name="permiso")
+    programar_actualizacion(cola)
+    cola.run_repeating(tarea_actualizacion, interval=COMPROBAR_ACTUALIZACION, first=40, name="recuperar_actualizacion")
+    cola.run_repeating(tarea_avisos, interval=60, first=15, name="avisos")
 
     horas, minutos = config.hora_saldo_diario()
     usadas, limite = contador.estado()
-    logging.info("Bot v%s funcionando · consultas hoy %s/%s · saldo automático %02d:%02d (%s)", VERSION,
-                 usadas, limite, horas, minutos, "activado" if config.saldo_diario_activo() else "desactivado")
+    logging.info("Bot v%s funcionando · actualización diaria %02d:%02d (en silencio) · consultas hoy %s/%s",
+                 VERSION, horas, minutos, usadas, limite)
     logging.info("Esperando mensajes de Telegram...")
     app.run_polling(close_loop=False, stop_signals=None)
-    return estado["motivo_parada"]
 
 
-def avisar(texto):
-    """Envía un mensaje sin arrancar el bot (p. ej. antes de pedir la autenticación). Nunca falla."""
+def avisar(texto_aviso):
+    """Envía un mensaje sin pasar por el bot (desde otro hilo o antes de arrancarlo). Nunca falla."""
     try:
         requests.post(f"https://api.telegram.org/bot{config.valor('TELEGRAM_TOKEN')}/sendMessage",
-                      json={"chat_id": config.valor("TELEGRAM_CHAT_ID"), "text": texto, "parse_mode": "HTML"},
+                      json={"chat_id": config.valor("TELEGRAM_CHAT_ID"), "text": texto_aviso, "parse_mode": "HTML"},
                       timeout=15)
     except Exception:
         pass

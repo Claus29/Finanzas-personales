@@ -26,6 +26,19 @@ POR_DEFECTO = {
     "SALDO_DIARIO_ACTIVO": "1",
     "ZONA_HORARIA": "Europe/Madrid",
     "EB_COUNTRY": "ES",
+    # v5: cobro, presupuesto y avisos
+    "DIA_COBRO_DESDE": "3",
+    "DIA_COBRO_HASTA": "7",
+    "PRESUPUESTO_CICLO": "0",
+    "UMBRAL_SALDO_BAJO": "300",
+    "AVISO_DEUDAS": "1",
+    "AVISO_METAS": "1",
+    "AVISO_RESUMEN_SEMANAL": "1",
+    "AVISO_RESUMEN_CICLO": "1",
+    "AVISO_SALDO_BAJO": "1",
+    "AVISO_RITMO": "1",
+    "AVISO_GASTO_GRANDE": "1",
+    "AVISO_SUSCRIPCIONES": "0",
 }
 
 
@@ -79,7 +92,32 @@ def hora_saldo_diario():
 
 
 def saldo_diario_activo():
+    # Desde la v5 la actualización diaria es siempre silenciosa y siempre ocurre; se conserva la clave.
     return valor("SALDO_DIARIO_ACTIVO") != "0"
+
+
+def entero(clave, minimo, maximo):
+    try:
+        return min(maximo, max(minimo, int(float(valor(clave)))))
+    except ValueError:
+        return min(maximo, max(minimo, int(POR_DEFECTO[clave])))
+
+
+def importe(clave):
+    try:
+        return max(0.0, float(valor(clave)))
+    except ValueError:
+        return float(POR_DEFECTO[clave])
+
+
+def dias_cobro():
+    """(primer día, último día) del mes en que suele llegar el salario."""
+    desde = entero("DIA_COBRO_DESDE", 1, 28)
+    return desde, max(desde, entero("DIA_COBRO_HASTA", 1, 28))
+
+
+def aviso_activo(clave):
+    return valor(clave) != "0"
 
 
 def leer_json(ruta, defecto):
@@ -93,6 +131,10 @@ def escribir_json(ruta, datos):
     temporal = ruta.with_suffix(".tmp")
     temporal.write_text(json.dumps(datos, ensure_ascii=False, indent=2), encoding="utf-8")
     temporal.replace(ruta)  # escritura atómica: nunca queda un archivo a medias
+
+
+# Mientras la ventana pide la autenticación con N26, la actividad del bot no se escribe en ella.
+CONSOLA = {"silenciada": False}
 
 
 class FormatoVentana(logging.Formatter):
@@ -116,7 +158,7 @@ def configurar_registro():
     if sys.stdout:
         consola = logging.StreamHandler(sys.stdout)
         consola.setFormatter(FormatoVentana("  %(asctime)s  %(message)s", datefmt="%d/%m %H:%M:%S"))
-        consola.addFilter(lambda r: r.name == "root" or r.levelno >= logging.WARNING)
+        consola.addFilter(lambda r: not CONSOLA["silenciada"] and (r.name == "root" or r.levelno >= logging.WARNING))
         raiz.addHandler(consola)
     # httpx registra cada petición a Telegram con el token en la URL: no queremos eso en el log.
     for ruidoso in ("httpx", "httpcore", "apscheduler", "telegram"):

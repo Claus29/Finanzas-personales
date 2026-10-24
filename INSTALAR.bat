@@ -57,7 +57,7 @@ echo       OK: %PY%
 
 rem ---------- 2. Descargar y comprobar la version nueva (sin tocar nada todavia) ----------
 echo [2/6] Descargando la ultima version del bot desde GitHub...
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; $zip=Join-Path $env:TEMP 'FinanzasBot.zip'; $tmp=Join-Path $env:TEMP 'FinanzasBot_extraido'; $nuevo='%NUEVO%'; foreach ($p in $zip, $tmp, $nuevo) { if (Test-Path $p) { Remove-Item $p -Recurse -Force } }; Invoke-WebRequest 'https://github.com/%REPO%/archive/refs/heads/%RAMA%.zip' -OutFile $zip; Expand-Archive $zip $tmp -Force; Move-Item (Get-ChildItem $tmp -Directory)[0].FullName $nuevo; Remove-Item $zip, $tmp -Recurse -Force; foreach ($f in 'principal.py', 'bot.py', 'lanzador.py', 'BOT.bat', 'requirements.txt', 'parar_bot.ps1', 'accesos_directos.ps1') { if (-not (Test-Path (Join-Path $nuevo $f))) { throw ('Descarga incompleta: falta ' + $f) } }; try { $c=(Invoke-RestMethod 'https://api.github.com/repos/%REPO%/commits?sha=%RAMA%&per_page=1')[0]; $v=$c.commit.committer.date + ' ' + $c.sha.Substring(0,7); Set-Content (Join-Path $nuevo 'version.txt') $v; Write-Host ('      Version nueva:     ' + $v) } catch { Write-Host '      Version nueva: (no disponible)' }" || goto :error
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; $zip=Join-Path $env:TEMP 'FinanzasBot.zip'; $tmp=Join-Path $env:TEMP 'FinanzasBot_extraido'; $nuevo='%NUEVO%'; foreach ($p in $zip, $tmp, $nuevo) { if (Test-Path $p) { Remove-Item $p -Recurse -Force } }; Invoke-WebRequest 'https://github.com/%REPO%/archive/refs/heads/%RAMA%.zip' -OutFile $zip; Expand-Archive $zip $tmp -Force; Move-Item (Get-ChildItem $tmp -Directory)[0].FullName $nuevo; Remove-Item $zip, $tmp -Recurse -Force; foreach ($f in 'principal.py', 'bot.py', 'datos.py', 'actualizacion.py', 'avisos.py', 'lanzador.py', 'BOT.bat', 'requirements.txt', 'parar_bot.ps1', 'accesos_directos.ps1') { if (-not (Test-Path (Join-Path $nuevo $f))) { throw ('Descarga incompleta: falta ' + $f) } }; try { $c=(Invoke-RestMethod 'https://api.github.com/repos/%REPO%/commits?sha=%RAMA%&per_page=1')[0]; $v=$c.commit.committer.date + ' ' + $c.sha.Substring(0,7); Set-Content (Join-Path $nuevo 'version.txt') $v; Write-Host ('      Version nueva:     ' + $v) } catch { Write-Host '      Version nueva: (no disponible)' }" || goto :error
 set "DESPUES="
 if exist "%NUEVO%\version.txt" set /p DESPUES=<"%NUEVO%\version.txt"
 if defined DESPUES if "%DESPUES%"=="%ANTES%" echo       Ya tenias la ultima version: se reinstala igualmente.
@@ -78,7 +78,7 @@ for %%F in (RECONECTAR_BANCO.bat DIAGNOSTICO.bat diagnostico.py diagnostico.txt 
 )
 
 rem ---------- 5. Dependencias ----------
-echo [5/6] Instalando lo que necesita el bot (puede tardar un par de minutos)...
+echo [5/6] Instalando lo que necesita el bot (la primera vez puede tardar unos minutos)...
 if not exist "%VPY%" (
     "%PY%" -m venv "%DIR%\.venv" || goto :error
 )
@@ -95,7 +95,8 @@ echo     TODO LISTO
 echo  ==========================================================
 echo   - Esta ventana es ahora la del bot. No la cierres, puedes minimizarla.
 echo   - Si es la primera vez o el permiso de N26 caduco, aqui mismo se te pedira.
-echo   - En Telegram: "Ver saldo" y "Ajustes" (limite diario y saldo automatico).
+echo   - En Telegram: Saldo, Analisis, Deudas, Metas, Recordatorios y Ajustes.
+echo   - El banco se consulta una vez al dia (00:00) en silencio. Tus datos estan en datos.db.
 echo   - En el escritorio: "Bot Finanzas" y "Bot Finanzas - Actualizar".
 echo.
 call "%DIR%\BOT.bat"

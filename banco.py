@@ -76,6 +76,18 @@ class EnableBanking:
     def saldos(self, uid):
         return self._api("GET", f"/accounts/{uid}/balances").get("balances", [])
 
+    def transacciones(self, uid, desde, paginas_max=20):
+        """Movimientos desde la fecha `desde` (todas las páginas, hasta `paginas_max`)."""
+        params = {"date_from": desde.isoformat()}
+        lista = []
+        for _ in range(paginas_max):
+            respuesta = self._api("GET", f"/accounts/{uid}/transactions", params=params)
+            lista += respuesta.get("transactions", [])
+            if not respuesta.get("continuation_key"):
+                break
+            params["continuation_key"] = respuesta["continuation_key"]
+        return lista
+
 
 def elegir_saldo(saldos):
     """Devuelve (importe, moneda, tipo) del saldo más representativo, o None si no hay ninguno."""

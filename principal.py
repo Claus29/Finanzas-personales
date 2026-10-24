@@ -3,8 +3,8 @@
 Todo ocurre en esta única ventana y en este único proceso:
 1. Comprueba que no haya otro bot funcionando (si lo hay, trae su ventana al frente y sale).
 2. Completa la configuración que falte (Telegram y clave de Enable Banking).
-3. Si el permiso de N26 no es válido (primera vez, caducado o desvinculado), pide la autenticación.
-4. Arranca el bot. Si el permiso caduca mientras funciona, vuelve al paso 3 sin abrir otra ventana.
+3. Arranca el bot. Si el permiso de N26 no es válido (primera vez, caducado o desvinculado), el
+   bot sigue funcionando con los últimos datos y esta misma ventana pide la autenticación.
 """
 import logging
 import sys
@@ -12,10 +12,10 @@ import time
 
 import requests
 
-import autenticacion
 import bot
 import config
 import configurar
+import datos
 import instancia
 
 OTRA_INSTANCIA = 4  # código de salida que BOT.bat entiende como «ya hay un bot abierto»
@@ -45,15 +45,12 @@ def esperar_internet():
 
 
 def ciclo():
-    """Una vuelta completa: configuración, permiso y bot. Devuelve True si hay que seguir."""
+    """Configuración y bot. Devuelve cuando el bot se detiene."""
     config.cargar()
+    datos.iniciar()
     configurar.completar()
     esperar_internet()
-    if not autenticacion.permiso_valido():
-        if config.leer_json(config.CONEXION, {}).get("cuentas") or config.valor("EB_SESSION_ID"):
-            bot.avisar(bot.AVISO_PERMISO)
-        autenticacion.autenticar()
-    return bot.ejecutar() == "reautenticar"
+    bot.ejecutar()
 
 
 def main():
@@ -66,8 +63,8 @@ def main():
     cabecera()
     while True:
         try:
-            if not ciclo():
-                return
+            ciclo()
+            return
         except KeyboardInterrupt:
             return
         except Exception as e:

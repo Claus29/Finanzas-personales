@@ -6,6 +6,7 @@ copiarla y, si algo sale mal, genera un enlace nuevo sin cerrar nada.
 """
 import logging
 import sys
+import threading
 import time
 import uuid
 import webbrowser
@@ -17,7 +18,7 @@ import requests
 import config
 import consultas
 from banco import ErrorBanco
-from consola import preguntar, si, texto_plano, titulo
+from consola import preguntar, si, titulo
 
 REDIRECT_POR_DEFECTO = "https://localhost/callback"
 DIAS_PERMISO_MAX = 180
@@ -259,16 +260,63 @@ def autenticar():
 
 
 def probar_conexion():
-    print("\nConsultando tu saldo para comprobar que todo funciona (gasta 1 consulta de hoy)...")
+    """Hace la actualización de hoy (si aún no se ha hecho) para comprobar que todo funciona."""
+    import actualizacion
+    from formato import euros
+    if actualizacion.hecha_hoy():
+        print("ℹ️  Los datos de hoy ya estaban descargados.")
+        return
+    print("\nDescargando tus saldos y movimientos para comprobar que todo funciona (1 consulta de hoy)...")
     try:
-        cuerpo = consultas.consultar()
+        resultado = actualizacion.actualizar()
     except consultas.LimiteAlcanzado:
-        print("ℹ️  Hoy ya no quedan consultas: la prueba se hará con tu próxima consulta.")
+        print("ℹ️  Hoy ya no quedan consultas: se descargará en la próxima actualización.")
         return
     except (requests.ConnectionError, requests.Timeout):
-        print("ℹ️  Sin conexión ahora mismo: la prueba se hará con tu próxima consulta.")
+        print("ℹ️  Sin conexión ahora mismo: se descargará en la próxima actualización.")
         return
-    print("\n" + texto_plano(cuerpo) + "\n")
+    import datos
+    print()
+    for cuenta in consultas.cuentas():
+        importe = datos.valor("SELECT importe FROM saldos WHERE uid = ? ORDER BY fecha DESC LIMIT 1", cuenta["uid"])
+        print(f"   {consultas.nombre_cuenta(cuenta)}: {euros(importe or 0)}")
+    print(f"   TOTAL: {euros(resultado['total'])}  ·  {resultado['movimientos_nuevos']} movimientos descargados\n")
     if not si("¿Son correctos estos saldos?"):
         print("He guardado todos los tipos de saldo que da el banco en bot.log.")
         print("Pásale a Claude las líneas que empiezan por «Saldos de» para revisarlo.")
+
+
+# ---------- En segundo plano (el bot sigue funcionando mientras tanto) ----------
+
+_hilo = None
+
+
+def en_marcha():
+    return _hilo is not None and _hilo.is_alive()
+
+
+def en_segundo_plano(al_terminar=None):
+    """Pide la autenticación en la ventana sin parar el bot. False si ya se estaba pidiendo."""
+    global _hilo
+    if en_marcha():
+        return False
+
+    def trabajo():
+        config.CONSOLA["silenciada"] = True  # que la actividad del bot no se mezcle con las preguntas
+        exito = False
+        try:
+            autenticar()
+            exito = True
+        except Exception as e:
+            logging.getLogger("detalle").exception("Fallo en la autenticación")
+            print(f"\n❌ No se ha podido completar la conexión con N26: {e}")
+            print("   Lo volveré a intentar dentro de un rato. El bot sigue funcionando con los últimos datos.\n")
+        finally:
+            config.CONSOLA["silenciada"] = False
+        if al_terminar:
+            al_terminar(exito)
+
+    _hilo = threading.Thread(target=trabajo, name="autenticacion", daemon=True)
+    _hilo.start()
+    return True
+
