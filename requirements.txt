@@ -1,6 +1,7 @@
-python-telegram-bot[job-queue]>=21.0
-python-dotenv>=1.0
-pyjwt>=2.8
+# Versiones acotadas para que una actualización nunca instale una versión mayor incompatible.
+python-telegram-bot[job-queue]>=21.0,<23
+python-dotenv>=1.0,<2
+pyjwt>=2.8,<3
 cryptography>=42
-requests>=2.31
+requests>=2.31,<3
 tzdata>=2024.1

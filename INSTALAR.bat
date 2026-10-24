@@ -31,7 +31,7 @@ echo  ==========================================================
 echo.
 
 rem ---------- 1. Python ----------
-echo [1/6] Comprobando Python...
+echo [1/7] Comprobando Python...
 call :buscar_python
 if not defined PY (
     echo       Python no esta instalado. Instalandolo, espera unos minutos...
@@ -51,27 +51,37 @@ if not defined PY (
 echo       OK: %PY%
 
 rem ---------- 2. Descargar el bot ----------
-echo [2/6] Descargando la ultima version del bot desde GitHub...
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; $zip=Join-Path $env:TEMP 'FinanzasBot.zip'; $tmp=Join-Path $env:TEMP 'FinanzasBot_extraido'; Invoke-WebRequest 'https://github.com/%REPO%/archive/refs/heads/%RAMA%.zip' -OutFile $zip; if (Test-Path $tmp) { Remove-Item $tmp -Recurse -Force }; Expand-Archive $zip $tmp -Force; $src=(Get-ChildItem $tmp -Directory)[0].FullName; robocopy $src '%DIR%' /E /NFL /NDL /NJH /NJS /NP | Out-Null; if ($LASTEXITCODE -ge 8) { throw 'No se pudieron copiar los archivos' }; Remove-Item $zip, $tmp -Recurse -Force; try { $c=(Invoke-RestMethod 'https://api.github.com/repos/%REPO%/commits?sha=%RAMA%&per_page=1')[0]; Set-Content (Join-Path '%DIR%' 'version.txt') ($c.commit.committer.date + ' ' + $c.sha.Substring(0,7)); Write-Host ('      Version: ' + $c.commit.committer.date + ' ' + $c.sha.Substring(0,7)) } catch {}" || goto :error
+rem Se descarga y se comprueba en TEMP antes de tocar nada de la instalacion actual.
+echo [2/7] Descargando la ultima version del bot desde GitHub...
+set "NUEVO=%TEMP%\FinanzasBot_nuevo"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; $zip=Join-Path $env:TEMP 'FinanzasBot.zip'; $tmp=Join-Path $env:TEMP 'FinanzasBot_extraido'; $nuevo='%NUEVO%'; foreach ($p in $tmp, $nuevo) { if (Test-Path $p) { Remove-Item $p -Recurse -Force } }; Invoke-WebRequest 'https://github.com/%REPO%/archive/refs/heads/%RAMA%.zip' -OutFile $zip; Expand-Archive $zip $tmp -Force; Move-Item (Get-ChildItem $tmp -Directory)[0].FullName $nuevo; Remove-Item $zip, $tmp -Recurse -Force; foreach ($f in 'bot.py', 'configurar.py', 'requirements.txt', 'accesos_directos.ps1') { if (-not (Test-Path (Join-Path $nuevo $f))) { throw ('Descarga incompleta: falta ' + $f) } }; try { $c=(Invoke-RestMethod 'https://api.github.com/repos/%REPO%/commits?sha=%RAMA%&per_page=1')[0]; $v=$c.commit.committer.date + ' ' + $c.sha.Substring(0,7); Set-Content (Join-Path $nuevo 'version.txt') $v; Write-Host ('      Version: ' + $v) } catch {}" || goto :error
 
 rem ---------- 3. Parar el bot si estaba en marcha ----------
-echo [3/6] Parando el bot si estaba en marcha...
+echo [3/7] Parando el bot si estaba en marcha...
 call :parar_bot
 
-rem ---------- 4. Dependencias ----------
-echo [4/6] Instalando lo que necesita el bot (puede tardar un par de minutos)...
+rem ---------- 4. Copiar archivos ----------
+rem Solo se copian los archivos del programa: .env, la clave .pem y los datos no se tocan.
+echo [4/7] Copiando archivos...
+robocopy "%NUEVO%" "%DIR%" /E /NFL /NDL /NJH /NJS /NP >nul
+if errorlevel 8 goto :error
+rmdir /s /q "%NUEVO%" >nul 2>&1
+
+rem ---------- 5. Dependencias ----------
+echo [5/7] Instalando lo que necesita el bot (puede tardar un par de minutos)...
 if not exist "%VPY%" (
     "%PY%" -m venv "%DIR%\.venv" || goto :error
 )
 "%VPY%" -m pip install --upgrade pip -q --disable-pip-version-check >nul 2>&1
 "%VPY%" -m pip install -r "%DIR%\requirements.txt" -q --disable-pip-version-check || goto :error
 
-rem ---------- 5. Configuracion ----------
-echo [5/6] Configuracion...
+rem ---------- 6. Configuracion ----------
+rem Solo pregunta lo que falte en el .env: en una actualizacion normal no pregunta nada.
+echo [6/7] Configuracion...
 "%VPY%" "%DIR%\configurar.py" || goto :error
 
-rem ---------- 6. Arranque automatico y puesta en marcha ----------
-echo [6/6] Creando accesos directos y arrancando el bot...
+rem ---------- 7. Arranque automatico y puesta en marcha ----------
+echo [7/7] Creando accesos directos y arrancando el bot...
 powershell -NoProfile -ExecutionPolicy Bypass -File "%DIR%\accesos_directos.ps1" || goto :error
 start "" "%DIR%\.venv\Scripts\pythonw.exe" "%DIR%\bot.py"
 timeout /t 8 /nobreak >nul
@@ -90,6 +100,7 @@ echo  ==========================================================
 echo   - Cada dia a las 00:00 recibiras tu saldo de N26 en Telegram.
 echo   - El bot arranca solo al encender el ordenador.
 echo   - Si el PC estaba apagado a las 00:00, te lo envia al encenderlo.
+echo   - En el chat del bot tienes el boton "Ver saldo" para verlo cuando quieras.
 echo   - En el escritorio tienes:
 echo       "Bot Finanzas - Actualizar"        para instalar novedades
 echo       "Bot Finanzas - Reconectar banco"  cuando caduque el permiso de N26
@@ -119,6 +130,10 @@ exit /b %errorlevel%
 :error
 echo.
 echo  [ERROR] Algo ha fallado. Haz una captura de esta ventana y enviasela a Claude.
+rem Si el bot ya estaba instalado, se vuelve a arrancar para no dejarte sin el.
+if exist "%DIR%\.env" if exist "%DIR%\.venv\Scripts\pythonw.exe" (
+    call :bot_en_marcha || start "" "%DIR%\.venv\Scripts\pythonw.exe" "%DIR%\bot.py"
+)
 echo.
 pause
 exit /b 1

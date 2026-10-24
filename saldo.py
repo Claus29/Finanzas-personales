@@ -50,7 +50,7 @@ def mensaje_saldo(eb, sesion):
     if sesion.get("status") != "AUTHORIZED":
         return f"⚠️ El permiso de acceso a N26 no está activo (estado: {sesion.get('status')}).\n{AVISO_RECONECTAR}"
 
-    lineas = [f"💰 *Saldo N26* — {datetime.now(zona()):%d/%m/%Y}"]
+    lineas = [f"💰 *Saldo N26* — {datetime.now(zona()):%d/%m/%Y %H:%M}"]
     cuentas = [c if isinstance(c, str) else c["uid"] for c in sesion.get("accounts", [])]
     for n, uid in enumerate(cuentas, 1):
         importe, moneda, _ = eb.saldo_actual(uid)
@@ -63,6 +63,13 @@ def mensaje_saldo(eb, sesion):
         if dias <= DIAS_AVISO_CADUCIDAD:
             lineas.append(f"\n⏳ El permiso del banco caduca en {dias} días. {AVISO_RECONECTAR}")
     return "\n".join(lineas)
+
+
+def texto_error(e):
+    """Mensaje de error comprensible para Telegram (sin Markdown)."""
+    if "Error 429" in str(e):
+        return "⏳ El banco limita el número de consultas al día. Prueba de nuevo más tarde."
+    return f"❌ No he podido consultar el saldo:\n{e}"
 
 
 def consultar_saldo():
