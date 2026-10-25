@@ -54,6 +54,10 @@ POR_DEFECTO = {
     "PROYECCION_HASTA": "",
     # v10: dinero que quieres que te quede libre en cada cobro (0 = todo el salario a pagos y metas)
     "LIBRE_MINIMO": "0",
+    # v11: reparto automático: todo lo que sobra (tras pagos y tu libre) va a las metas.
+    # Se activa solo al actualizar a la v11 (bot.anunciar_novedades) si la clave no está en el .env.
+    "REPARTO_AUTO": "0",
+    "REPARTO_MODO": "necesario",  # «necesario» (lo justo para cada fecha y el resto a la prioritaria) o «cascada»
 }
 
 

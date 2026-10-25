@@ -17,6 +17,7 @@ from datetime import date
 
 import analisis
 import ciclo
+import reparto
 import config
 import datos
 import deudas
@@ -83,10 +84,14 @@ def mes_final():
     return None
 
 
-def fechas_cobro():
+def fechas_cobro(cobros=None):
     """[F1, …, FN, F(N+1)]: los próximos cobros hasta el mes elegido (y el siguiente, que cierra el último)."""
     dia = dia_habitual()
     fechas = [ciclo.proximo_cobro()]
+    if cobros:
+        while len(fechas) <= cobros:
+            fechas.append(sumar_meses(fechas[-1], 1, dia))
+        return fechas
     final = mes_final()
     while True:
         siguiente = sumar_meses(fechas[-1], 1, dia)
@@ -209,6 +214,13 @@ def _cobro_metas(lista, ahorrado, pendientes, fecha, k, cambios):
 def fin_metas(cambios=None, cobros=120):
     """{meta_id: fecha del cobro con el que llegarías al objetivo (None si no llegas en 10 años)}."""
     cambios = cambios or {}
+    if reparto.activo():  # con el reparto automático depende del dinero de cada cobro: se simula todo
+        r = _cacheado(("fin_reparto", repr(sorted((k, sorted(v.items())) for k, v in cambios.items()))),
+                      lambda: simular(cambios, cobros=cobros))
+        if r:
+            ya = {m["id"] for m in metas.activas() if estado_inicial_metas(cambios)[m["id"]] >= m["objetivo"] - 0.004}
+            fin = {e[4]: e[0] for e in r["eventos"] if e[2] == "meta"}
+            return {m["id"]: hoy() if m["id"] in ya else fin.get(m["id"]) for m in metas.activas()}
     dia = dia_habitual()
     ahorrado = estado_inicial_metas(cambios)
     lista = metas.activas()
@@ -231,9 +243,29 @@ def libre_minimo():
 
 # ---------- Simulación ----------
 
-def simular(cambios=None, salario=None, extra_salario=0.0, contar_deben=True, sin_metas=False):
-    """Proyección cobro a cobro. cambios: {meta_id: {campo de la meta: valor, …, pausa: {k}}}."""
+def _cobro_reparto(lista, ahorrado, pendientes, fecha, disponible, cambios):
+    """Reparto automático de un cobro: [(meta, importe, False)] y las metas conseguidas con él."""
+    estado = [(m, ahorrado[m["id"]]) for m in lista if m["id"] in pendientes]
+    asignado, _ = reparto.repartir(disponible, estado, fecha, cambios)
+    aportes, conseguidas = [], []
+    for m in lista:
+        importe = asignado.get(m["id"], 0.0)
+        antes = ahorrado[m["id"]]
+        ahorrado[m["id"]] = round(antes + importe, 2)
+        aportes.append((m, importe, False))
+        if antes < m["objetivo"] - 0.004 <= ahorrado[m["id"]]:
+            conseguidas.append(m)
+    for m in conseguidas:
+        pendientes.discard(m["id"])
+    return aportes, conseguidas
+
+
+def simular(cambios=None, salario=None, extra_salario=0.0, contar_deben=True, sin_metas=False, cobros=None,
+            repartir=None):
+    """Proyección cobro a cobro. cambios: {meta_id: {campo de la meta: valor, …, pausa: {k}}}.
+    Con el reparto automático (repartir, por defecto REPARTO_AUTO) tu libre es fijo y lo que sobra va a las metas."""
     cambios = cambios or {}
+    repartir = reparto.activo() if repartir is None else repartir
     base, origen = salario_base()
     if salario is None:
         salario = base
@@ -241,7 +273,7 @@ def simular(cambios=None, salario=None, extra_salario=0.0, contar_deben=True, si
         return None
     salario = round(salario + extra_salario, 2)
     minimo = libre_minimo()
-    fechas = fechas_cobro()
+    fechas = fechas_cobro(cobros)
     n = len(fechas) - 1
     por_ciclo, sin_fecha, fines = _cacheado(("deudas", tuple(fechas)), lambda: calendario_deudas(fechas))
     lista_metas = [] if sin_metas else metas.activas()
@@ -254,6 +286,7 @@ def simular(cambios=None, salario=None, extra_salario=0.0, contar_deben=True, si
         return libre + sum(metas.pendiente_ciclo(m) for m in metas.activas()), \
             round(sum(i["importe"] for i in deudas.por_cobrar()), 2)
     libre_hoy, deben = _cacheado("hoy", base_hoy)
+    sin_metas_hoy = round(libre_hoy + (deben if contar_deben else 0.0), 2)  # para el «hueco»: lo que falta de verdad
     # El dinero libre de hoy ya descuenta lo que falta apartar este ciclo; con cambios simulados se recalcula.
     libre_hoy -= sum(pendiente_hoy(m, cambios.get(m["id"], {})) for m in lista_metas)
     libre_hoy = round(libre_hoy, 2)
@@ -268,7 +301,18 @@ def simular(cambios=None, salario=None, extra_salario=0.0, contar_deben=True, si
         totales = {c: 0.0 for c in CLASES}
         for _, importe, c in items:
             totales[c] += importe
-        todos, conseguidas = _cobro_metas(lista_metas, ahorrado, pendientes, fecha, k, cambios)
+        hueco = 0.0
+        if repartir and lista_metas:
+            pagos_previos = totales["fijos"] + totales["subs"] + totales["cuotas"] + totales["unicos"]
+            hueco = max(0.0, -acumulado)  # si llegabas en negativo, este cobro lo tapa antes de repartir
+            disponible = salario + totales["deben"] - pagos_previos - minimo - hueco
+            habia = bool(pendientes)
+            todos, conseguidas = _cobro_reparto(lista_metas, ahorrado, pendientes, fecha, disponible, cambios)
+            if habia and not pendientes:
+                eventos.append((fecha, k, "todas", "consigues todas tus metas: desde el próximo cobro lo que sobra queda "
+                                                   "libre (¿creamos otra?)", 0))
+        else:
+            todos, conseguidas = _cobro_metas(lista_metas, ahorrado, pendientes, fecha, k, cambios)
         aportes = []
         for m, importe, en_tramo in todos:
             cfg = cambios.get(m["id"], {})
@@ -291,7 +335,7 @@ def simular(cambios=None, salario=None, extra_salario=0.0, contar_deben=True, si
             estado = "🟡"
         else:
             estado = "🟢"
-        ciclos.append({"k": k, "fecha": fecha, "fin": fechas[k], "salario": salario, "items": items,
+        ciclos.append({"k": k, "fecha": fecha, "fin": fechas[k], "salario": salario, "items": items, "hueco": hueco,
                        "aportes": aportes, "por_meta": {m["id"]: (importe, en_tramo) for m, importe, en_tramo in todos},
                        "totales": {c: round(v, 2) for c, v in totales.items()}, "pagos": pagos,
                        "libre": libre, "acumulado": acumulado, "estado": estado,
@@ -312,12 +356,13 @@ def simular(cambios=None, salario=None, extra_salario=0.0, contar_deben=True, si
     peor = min(ciclos, key=lambda x: x["libre"])
     sostenible = all(x["estado"] != "🔴" for x in ciclos)
     maximo_metas = min(round(x["salario"] + x["totales"]["deben"] - x["pagos"] - minimo, 2) for x in ciclos)
-    orden = {"meta": 0, "tramo": 1, "deuda": 2, "deben": 3, "unico": 4}
+    orden = {"meta": 0, "todas": 1, "tramo": 2, "deuda": 3, "deben": 4, "unico": 5}
     return {"salario": salario, "origen": origen if not extra_salario else f"{origen}, {euros_cortos(extra_salario)}",
             "fechas": fechas, "ciclos": ciclos, "puente": puente, "libre_hoy": libre_hoy, "deben_hoy": deben_hoy,
             "eventos": sorted(eventos, key=lambda x: (x[0], orden[x[2]])), "sin_fecha": sin_fecha, "peor": peor,
             "sostenible": sostenible, "cumple": sostenible and all(x["estado"] == "🟢" for x in ciclos),
             "minimo": minimo, "maximo_metas": maximo_metas, "final": ciclos[-1]["acumulado"],
+            "hueco": round(max(0.0, -sin_metas_hoy), 2), "reparto": bool(repartir and lista_metas),
             "rojos": [x for x in ciclos if x["estado"] == "🔴"], "metas": lista_metas, "cambios": cambios,
             "contar_deben": contar_deben}
 
@@ -331,6 +376,10 @@ def _cacheado(clave, calcular):
 
 
 def veredicto(p):
+    if p.get("hueco"):
+        icono, resto = veredicto({**p, "hueco": 0})
+        return "🔴", (f"Hasta el cobro del {p['ciclos'][0]['fecha'].day} {MESES_CORTOS[p['ciclos'][0]['fecha'].month - 1]} "
+                      f"te faltan {euros(p['hueco'])}. Después: {icono} {resto[0].lower() + resto[1:]}")
     if not p["sostenible"]:
         primero = p["rojos"][0]
         return "🔴", (f"No es sostenible: en el cobro de {mes_largo(primero['fecha'])} "
@@ -561,6 +610,45 @@ def acelerar(p):
             "variantes": [variante], "recomendada": "u"}
 
 
+def _tarde():
+    """Metas (no especiales) que con la configuración actual llegan después de su fecha (o nunca)."""
+    fines = fin_metas()
+    return [m for m in _sin_conseguir() if not m["especial"]
+            and (fines.get(m["id"]) is None or fines[m["id"]].isoformat() > m["fecha_limite"])], fines
+
+
+def priorizar_reparto(prioritarias):
+    """Con el reparto automático, priorizar es solo el orden: la 1.ª recibe primero."""
+    activas = _sin_conseguir()
+    por_id = {m["id"]: m for m in activas}
+    ids = [i for i in prioritarias if i in por_id]
+    if not ids:
+        return None
+    cambios = {m["id"]: {"prioridad": (ids.index(m["id"]) + 1) if m["id"] in ids else 0} for m in activas}
+    variante = _variante("u", "🥇 Aplicar este orden", cambios, [])
+    variante["posible"] = True  # cambiar el orden siempre se puede (el dinero total es el mismo)
+    nombres = " y ".join(f"«{por_id[i]['nombre']}»" for i in ids)
+    explicacion = ("Recibe primero lo necesario para llegar a su fecha y, después, todo lo que sobre hasta completarse."
+                   if reparto.modo() == "necesario" else
+                   "Recibe todo lo que sobra hasta completarse; después pasa a la siguiente.")
+    return {"clave": "Q" + "-".join(map(str, ids)), "titulo": f"🥇 Priorizar {nombres}", "explicacion": explicacion,
+            "variantes": [variante], "recomendada": "u", "prioritarias": ids}
+
+
+def fechas_reparto(p):
+    """Con el reparto automático: poner a cada meta que llega tarde la fecha en que de verdad llega."""
+    tarde, fines = _tarde()
+    tarde = [m for m in tarde if fines.get(m["id"])]
+    if not tarde:
+        return None
+    cambios = {m["id"]: {"fecha_limite": sumar_meses(fines[m["id"]], 0, 28).isoformat()} for m in tarde}
+    variante = _variante("u", "📅 Mover las fechas", cambios, [m["id"] for m in tarde])
+    variante["posible"] = True
+    return {"clave": "F", "titulo": "📅 Poner a cada meta la fecha en que llega",
+            "explicacion": "Con lo que sobra de cada cobro no llegan a tiempo: así sus fechas cuadran con la realidad.",
+            "variantes": [variante], "recomendada": "u"}
+
+
 def prioritarias_actuales():
     """Ids de las metas marcadas como prioritarias (en orden) o, si no hay, la de fecha más cercana."""
     activas = _sin_conseguir()
@@ -585,6 +673,13 @@ def _con_cache(funcion, *args):
 def propuestas(p):
     """Propuestas para la configuración actual (si no cumple: priorizar, recortar, alargar; si sobra: acelerar)."""
     def calcular():
+        if reparto.activo():
+            tarde = _tarde()[0]
+            if not tarde:
+                return []
+            # Se propone poner primero la meta que llega tarde (detrás, las prioritarias que ya tuvieras)
+            orden = [tarde[0]["id"]] + [i for i in prioritarias_actuales() if i != tarde[0]["id"]]
+            return [x for x in (priorizar_reparto(orden), fechas_reparto(p)) if x]
         if p["cumple"]:
             return [x for x in (acelerar(p),) if x]
         return [x for x in (priorizar(prioritarias_actuales()), recortar(p), alargar(p)) if x]
@@ -595,8 +690,9 @@ def propuesta(p, clave):
     """Una propuesta por su clave («Q3-1», «R», «B», «D»)."""
     def calcular():
         if clave.startswith("Q"):
-            return priorizar([int(x) for x in clave[1:].split("-") if x.isdigit()])
-        return {"R": recortar, "B": alargar, "D": acelerar}.get(clave, lambda _: None)(p)
+            ids = [int(x) for x in clave[1:].split("-") if x.isdigit()]
+            return priorizar_reparto(ids) if reparto.activo() else priorizar(ids)
+        return {"R": recortar, "B": alargar, "D": acelerar, "F": fechas_reparto}.get(clave, lambda _: None)(p)
     return _con_cache(calcular)
 
 

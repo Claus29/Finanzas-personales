@@ -101,6 +101,12 @@ def migrar(con):
                                 ("tramo_despues", "TEXT NOT NULL DEFAULT ''")):
         if columna not in columnas_metas:
             con.execute(f"ALTER TABLE metas ADD COLUMN {columna} {definicion}")
+    # v11: reparto automático fijado al cobrar (no cambia durante el ciclo)
+    con.execute("CREATE TABLE IF NOT EXISTS reparto_ciclos (ciclo TEXT PRIMARY KEY, salario REAL NOT NULL, "
+                "pagos REAL NOT NULL, libre REAL NOT NULL, hueco REAL NOT NULL DEFAULT 0, a_metas REAL NOT NULL, "
+                "sobra REAL NOT NULL DEFAULT 0, modo TEXT NOT NULL, creado TEXT NOT NULL)")
+    con.execute("CREATE TABLE IF NOT EXISTS reparto_metas (meta_id INTEGER NOT NULL, ciclo TEXT NOT NULL, "
+                "importe REAL NOT NULL, PRIMARY KEY (meta_id, ciclo))")
     con.execute("CREATE TABLE IF NOT EXISTS aportes_ciclo (meta_id INTEGER NOT NULL, ciclo TEXT NOT NULL, "
                 "estado TEXT NOT NULL, importe REAL NOT NULL, fecha TEXT NOT NULL, aportacion_id INTEGER, "
                 "PRIMARY KEY (meta_id, ciclo))")

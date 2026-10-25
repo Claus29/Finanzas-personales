@@ -308,6 +308,7 @@ async def responder(update, context, espera, escrito):
         per = "unico" if paso == "deuda_parte" else espera["periodo"]
         resultado, accion = deudas.pagar(deuda["id"], per, importe)
         await b.enviar(context, f"✅ {analisis.e(deuda['nombre'])}: {analisis.e(resultado)}.", b.con_deshacer(accion))
+        await b.repartir_lo_que_te_pagan(context, deuda)
         return True
     if paso == "deuda_aplazar":
         fecha = leer_fecha(escrito, d)
@@ -448,6 +449,7 @@ async def boton(update, context, partes):  # noqa: C901  (enrutador de botones d
         resultado, accion = deudas.pagar(deuda["id"], per)
         b.logging.info("%s: %s", "Cobro confirmado" if deudas.me_deben(deuda) else "Pago confirmado", deuda["nombre"])
         await b.mostrar(update, context, f"✅ {analisis.e(deuda['nombre'])}: {analisis.e(resultado)}.", b.con_deshacer(accion))
+        await b.repartir_lo_que_te_pagan(context, deuda)
         return "Hecho"
     if clave == "dot":
         deuda = deudas.obtener(int(partes[1]))

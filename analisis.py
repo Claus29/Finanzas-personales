@@ -492,11 +492,14 @@ def texto_meta(meta):
             lineas.append(f"Fecha: {fecha_corta(p['limite'])} {p['limite'].year}")
     lineas.append(p["estado"])
     if p["falta"] > 0 and meta["activa"] == metas.ACTIVA:
+        import reparto
         modo = (f"✍️ fija de {euros_cortos(meta['aporte_fijo'])}" if meta["aporte_modo"] == "fija" and meta["aporte_fijo"]
                 else "🧮 la necesaria para llegar a tiempo")
+        if reparto.activo():
+            modo = "🔀 reparto automático (su parte de lo que sobra de cada cobro)"
         if meta["prioridad"]:
             lineas.append(f"🥇 Prioridad {meta['prioridad']}")
-        if meta["tramo_aporte"] >= 0:
+        if meta["tramo_aporte"] >= 0 and not reparto.activo():
             tras = ("después sube lo necesario para llegar a su fecha" if meta["tramo_despues"] == "recuperar"
                     else "después vuelve a su cuota normal (fecha aplazada)")
             espera = metas.describir_hasta(meta["tramo_hasta"])
@@ -572,16 +575,26 @@ def texto_al_cobrar(importe=None):
             return "al cobrar"
         return fecha_corta(item["vence"])
 
+    import reparto
+    r = reparto.del_ciclo(p["fecha"].isoformat()) if reparto.activo() else None
     bloque("⚠️ Atrasado de antes", p["atrasado"])
     bloque("🏠 Gastos fijos y suscripciones", p["fijos"])
     bloque("💳 Cuotas y deudas", p["cuotas"])
+    if r and r["hueco"]:
+        lineas.append(f"🕳️ Tapas lo que faltaba antes del cobro: <b>{euros(r['hueco'])}</b> (se queda en tu cuenta)")
     if p["aportes"]:
-        lineas.append(f"🎯 Mover a tus metas: <b>−{euros(sum(x for _, x in p['aportes']))}</b>")
+        titulo = "🎯 A tus metas (todo lo que sobra)" if r else "🎯 Mover a tus metas"
+        lineas.append(f"{titulo}: <b>−{euros(sum(x for _, x in p['aportes']))}</b>")
         for meta, importe in p["aportes"]:
             icono = "🛟" if meta["especial"] == "colchon" else "→"
             destino = f"a «{e(nombres.get(meta['uid'], 'su cuenta'))}»" if meta["uid"] else "(apartar)"
             lineas.append(f"   {icono} {e(meta['nombre'])} {euros_cortos(importe)} {destino}")
-    lineas += ["──────────", f"💸 <b>Te quedan para gastar: {euros(p['queda'])}</b>"]
+    if r:
+        lineas += ["──────────", f"💸 <b>Tu libre: {euros(p['queda'] - r['hueco'])}</b> (el que elegiste: {euros(r['libre'])})"]
+        if r["sobra"] > 0.004 and not metas.activas():
+            lineas.append(f"💡 No tienes metas: los {euros(r['sobra'])} que sobran quedan libres. ¿Creamos una?")
+    else:
+        lineas += ["──────────", f"💸 <b>Te quedan para gastar: {euros(p['queda'])}</b>"]
     if p["queda"] >= 0:
         lineas.append(f"   ≈ {euros_cortos(p['por_dia'])}/día durante {p['dias']} días")
         presupuesto = config.importe("PRESUPUESTO_CICLO")

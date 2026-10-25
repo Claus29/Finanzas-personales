@@ -16,6 +16,7 @@ import deudas
 import graficos_oscuro as go
 import metas
 import proyeccion as pr
+import reparto
 from formato import euros, euros_cortos, fecha_corta, leer_importe, leer_mes, sumar_meses
 
 PREFIJOS = {"pr", "prp", "pra", "pri", "prs", "prq", "pro"}
@@ -52,7 +53,21 @@ def botones_menu(actual="res"):
     filas = [opciones[i:i + 3] for i in range(0, len(opciones), 3)]
     filas.append([(f"📆 Hasta: {pr.aviso_horizonte()}", "pr:hz"), ("💶 Salario", "pr:sal"),
                   (f"💸 Libre: {euros_cortos(pr.libre_minimo())}", "pr:lib")])
+    filas.append([(f"🔀 Reparto automático: {'sí' if reparto.activo() else 'no'}", "pr:rep")])
     return filas
+
+
+def rango_metas(p, meta_id):
+    """(mínimo, máximo, media) de lo que recibe una meta en los cobros en que aún le falta."""
+    valores = [c["por_meta"].get(meta_id, (0.0, False))[0] for c in p["ciclos"]]
+    con_dinero = [v for v in valores if v > 0.004]
+    if not con_dinero:
+        return 0.0, 0.0, 0.0
+    return min(con_dinero), max(con_dinero), sum(con_dinero) / len(con_dinero)
+
+
+def texto_rango(minimo, maximo):
+    return euros_cortos(round(minimo)) if abs(maximo - minimo) < 1 else f"de {euros_cortos(round(minimo))} a {euros_cortos(round(maximo))}"
 
 
 def botones_prioridad(p, maximo=4):
@@ -70,6 +85,8 @@ def sin_salario():
 def lineas_cobro(c):
     t = c["totales"]
     lineas = [f"💶 Entra {euros(c['salario'])}" + (f" + te devuelven {euros(t['deben'])}" if t["deben"] else "")]
+    if c.get("hueco"):
+        lineas.append(f"🕳️ Tapa lo que faltaba antes del cobro: {euros(c['hueco'])} (se queda en tu cuenta)")
     for clave, icono, nombre in (("fijos", "🏠", "Gastos fijos"), ("subs", "📺", "Suscripciones"),
                                  ("cuotas", "💳", "Cuotas de deudas"), ("unicos", "🧾", "Pagos únicos")):
         if t[clave]:
@@ -97,8 +114,10 @@ def resumen():
     primero = ciclos[0]
     lineas = [f"📈 <b>Proyección</b> · {len(ciclos)} cobros, hasta {pr.mes_largo(ciclos[-1]['fecha'])}",
               f"💶 Salario: <b>{euros(p['salario'])}</b> <i>({p['origen']})</i>",
-              f"💸 Libre que quieres en cada cobro: <b>{euros(p['minimo'])}</b>"
-              + (" <i>(todo el salario a pagos y metas)</i>" if not p["minimo"] else ""), "",
+              (f"🔀 <b>Reparto automático</b>: tu libre es <b>{euros(p['minimo'])}</b> en cada cobro y todo lo demás va a "
+               f"tus metas <i>({reparto.MODOS[reparto.modo()][2:].lower()})</i>" if p["reparto"] else
+               f"💸 Libre que quieres en cada cobro: <b>{euros(p['minimo'])}</b>"
+               + (" <i>(todo el salario a pagos y metas)</i>" if not p["minimo"] else "")), "",
               f"{icono} <b>{veredicto}</b>", "",
               f"<b>Hasta el próximo cobro ({fecha_corta(primero['fecha'])})</b>",
               f"💰 Dinero libre hoy: {euros(p['libre_hoy'])}"
@@ -120,8 +139,13 @@ def resumen():
     if devuelven:
         lineas.append(f"• Te devolverán {euros(devuelven)} (cuenta en la proyección)")
     lineas.append(f"• Comprometido en el próximo cobro: {comprometido:.0%} del salario (pagos + metas)".replace("%", " %"))
-    lineas.append(f"• Para metas puedes destinar hasta <b>{euros(p['maximo_metas'])}</b> por cobro dejando tu libre mínimo "
-                  f"(ahora apartas {euros(primero['totales']['metas'])})")
+    if p["reparto"]:
+        a_cada = [c["totales"]["metas"] for c in ciclos if c["totales"]["metas"] > 0.004]
+        if a_cada:
+            lineas.append(f"• A tus metas va {texto_rango(min(a_cada), max(a_cada))} por cobro (lo que sobra cada mes)")
+    else:
+        lineas.append(f"• Para metas puedes destinar hasta <b>{euros(p['maximo_metas'])}</b> por cobro dejando tu libre "
+                      f"mínimo (ahora apartas {euros(primero['totales']['metas'])})")
     fines = pr.fin_metas()
     if any(not x["especial"] and fines.get(x["id"]) is None for x in p["metas"]):
         lineas.append("• ⚠️ Alguna meta no llega nunca con la aportación actual: mira 🎯 Metas")
@@ -130,9 +154,14 @@ def resumen():
         lineas += ["", "⚖️ <b>Así no te queda lo que quieres.</b> Elige qué meta priorizar (las demás esperan y después "
                        "recuperan o se aplazan) o mira todas las propuestas."]
         filas = botones_prioridad(p) + [[("⚖️ Ver propuestas", "pr:aju"), ("🙈 Ignorar", "pri")]] + filas
-    lineas += ["", "💡 <i>Qué significa: «libre» es lo que te queda de cada cobro después de pagar todo y apartar lo de "
-                   "tus metas (no se resta lo que gastas en el día a día). Si algún cobro sale en rojo, la configuración "
-                   "actual no es sostenible.</i>"]
+    if p["reparto"]:
+        lineas += ["", "💡 <i>Qué significa: tu libre es fijo y es tuyo; todo lo que sobra después de pagar va a tus metas, "
+                       "así que reciben más los meses con menos pagos. Si algún cobro no llega ni a tu libre, sale en "
+                       "amarillo o rojo.</i>"]
+    else:
+        lineas += ["", "💡 <i>Qué significa: «libre» es lo que te queda de cada cobro después de pagar todo y apartar lo "
+                       "de tus metas (no se resta lo que gastas en el día a día). Si algún cobro sale en rojo, la "
+                       "configuración actual no es sostenible.</i>"]
     imagenes = [go.cobro(primero, pie(p)), go.reparto(p, pie(p))]
     return "\n".join(lineas), imagenes, filas
 
@@ -180,7 +209,7 @@ def calendario():
         if etiqueta != mes_actual:
             lineas.append(f"<b>{etiqueta.capitalize()}</b>")
             mes_actual = etiqueta
-        icono = {"deuda": "🔓", "meta": "🏁", "deben": "🤝", "unico": "🧾", "tramo": "🔁"}[tipo]
+        icono = {"deuda": "🔓", "meta": "🏁", "deben": "🤝", "unico": "🧾", "tramo": "🔁", "todas": "🏆"}[tipo]
         lineas.append(f"   {icono} {e(texto)}")
     if not p["eventos"]:
         lineas.append("No hay cambios en este periodo: cada cobro se reparte igual.")
@@ -248,10 +277,15 @@ def pantalla_metas():
         limite = None if m["especial"] else date.fromisoformat(m["fecha_limite"])
         modo = f"fija de {euros_cortos(m['aporte_fijo'])}" if m["aporte_modo"] == "fija" and m["aporte_fijo"] else "la necesaria"
         icono = "🛟" if m["especial"] else ("🥇" if m["prioridad"] else "🎯")
-        lineas.append(f"{icono} <b>{e(m['nombre'])}</b>" + (f" · prioridad {m['prioridad']}" if m["prioridad"] else "")
-                      + f" · {euros(aporte)} por cobro ({aporte / p['salario']:.0%} del salario) · {modo}".replace("%", " %"))
+        if p["reparto"]:
+            minimo, maximo, media = rango_metas(p, m["id"])
+            lineas.append(f"{icono} <b>{e(m['nombre'])}</b>" + (f" · prioridad {m['prioridad']}" if m["prioridad"] else "")
+                          + f" · recibe {texto_rango(minimo, maximo)} por cobro (de media {euros_cortos(round(media))})")
+        else:
+            lineas.append(f"{icono} <b>{e(m['nombre'])}</b>" + (f" · prioridad {m['prioridad']}" if m["prioridad"] else "")
+                          + f" · {euros(aporte)} por cobro ({aporte / p['salario']:.0%} del salario) · {modo}".replace("%", " %"))
         espera, despues, cuando = fases(p, m["id"])
-        if m["tramo_aporte"] >= 0 and espera is not None:
+        if not p["reparto"] and m["tramo_aporte"] >= 0 and espera is not None:
             tras = ("sube para llegar a su fecha" if m["tramo_despues"] == "recuperar" else "vuelve a su cuota (aplazada)")
             lineas.append(f"   ⏸️ {euros_cortos(espera)} {texto_hasta(m, fines)}; después {tras}"
                           + (f": {euros_cortos(despues)} desde {pr.mes_corto(cuando)}" if despues else ""))
@@ -263,8 +297,11 @@ def pantalla_metas():
             lineas.append("   🔴 con esta aportación no llegas")
         filas_grafico.append((m["nombre"], aporte, fin, limite))
     total = sum(base.values())
-    lineas += ["", f"Total: <b>{euros(total)}</b> por cobro · puedes destinar hasta {euros(p['maximo_metas'])} "
-                   "dejando tu libre mínimo"]
+    if p["reparto"]:
+        lineas += ["", f"🔀 Reparto: {reparto.MODOS[reparto.modo()]}. En el próximo cobro: <b>{euros(total)}</b>"]
+    else:
+        lineas += ["", f"Total: <b>{euros(total)}</b> por cobro · puedes destinar hasta {euros(p['maximo_metas'])} "
+                       "dejando tu libre mínimo"]
     if total:
         mayor = max(p["metas"], key=lambda m: base.get(m["id"], 0))
         lineas.append(f"La que más pesa: {e(mayor['nombre'])} ({base.get(mayor['id'], 0) / total:.0%} de lo que apartas)"
@@ -290,10 +327,13 @@ def ajustar(sim):
         return sin_salario()
     icono, veredicto = pr.veredicto(p)
     lineas = ["⚖️ <b>Ajustar tus metas</b>", f"Ahora: {icono} {veredicto}",
-              f"💸 Libre que quieres en cada cobro: {euros(p['minimo'])} <i>(cámbialo abajo)</i>", ""]
+              f"💸 Libre que quieres en cada cobro: {euros(p['minimo'])} <i>(cámbialo abajo)</i>"]
+    if p["reparto"]:
+        lineas.append(f"🔀 Reparto automático: {reparto.MODOS[reparto.modo()]}")
+    lineas.append("")
     filas = []
     prioritarias = [m for m in p["metas"] if m["prioridad"]]
-    en_espera = [m for m in p["metas"] if m["tramo_aporte"] >= 0]
+    en_espera = [m for m in p["metas"] if m["tramo_aporte"] >= 0 and not p["reparto"]]
     if prioritarias or en_espera:
         fines = pr.fin_metas()
         lineas.append("🥇 <b>Prioridades</b>: " + ", ".join(f"{m['prioridad']}.ª {e(m['nombre'])}"
@@ -317,7 +357,10 @@ def ajustar(sim):
     elif p["metas"]:
         lineas += ["", "✅ No hace falta ajustar nada."]
     imagenes = []
-    if p["metas"]:
+    if p["reparto"]:
+        filas += [[(f"{'✅ ' if reparto.modo() == clave else ''}{texto}", f"pr:rep:m:{clave}")]
+                  for clave, texto in (("necesario", "🧮 Necesario + prioridad"), ("cascada", "🥇 En cascada"))]
+    if p["metas"] and not p["reparto"]:
         lineas += ["", "<b>Simulador</b>: cambia la aportación o la fecha de una meta y mira el resultado "
                        "(no se guarda nada hasta que pulses «Aplicar»)."]
         cambios = cambios_simulados(sim)
@@ -344,9 +387,14 @@ def ajustar(sim):
             filas.append([("✅ Aplicar cambios", "prs:ok"), ("↩️ Quitar", "prs:x")])
             imagenes.append(go.comparacion([("Ahora", p), ("Con tus cambios", r)], pie(p), "Antes y después",
                                            "Lo libre en cada cobro con tus cambios"))
-    lineas += ["", "💡 <i>Qué significa: priorizar una meta hace que las demás aporten menos (o nada) mientras tanto; "
-                   "cuando la consigues, las demás recuperan (suben para llegar a su fecha) o se aplazan (vuelven a su "
-                   "cuota y llegan más tarde). Tú eliges; el bot recomienda la que te deja tu libre mínimo.</i>"]
+    if p["reparto"]:
+        lineas += ["", "💡 <i>Qué significa: con el reparto automático, lo que sobra de cada cobro va a tus metas en el "
+                       "orden de tus prioridades. Priorizar una meta hace que reciba antes; si alguna no llega a su fecha, "
+                       "puedes priorizarla o mover su fecha.</i>"]
+    else:
+        lineas += ["", "💡 <i>Qué significa: priorizar una meta hace que las demás aporten menos (o nada) mientras tanto; "
+                       "cuando la consigues, las demás recuperan (suben para llegar a su fecha) o se aplazan (vuelven a "
+                       "su cuota y llegan más tarde). Tú eliges; el bot recomienda la que te deja tu libre mínimo.</i>"]
     return "\n".join(lineas), imagenes, filas + botones_menu("aju")
 
 
@@ -376,6 +424,16 @@ def describir_meta(p, v, meta_id, fines):
     cfg = v["cambios"].get(meta_id, {})
     r = v["resultado"]
     fin = fines.get(meta_id)
+    if r.get("reparto"):
+        limite = date.fromisoformat(cfg.get("fecha_limite", meta["fecha_limite"]))
+        antes = pr.fin_metas().get(meta_id)
+        minimo, maximo, _ = rango_metas(r, meta_id)
+        llega = f"llega en {pr.mes_corto(fin)}" if fin else "no llega en 10 años"
+        if fin and not meta["especial"]:
+            llega += " ✅ a tiempo" if fin <= limite else f" (su fecha: {pr.mes_corto(limite)})"
+        if antes and fin and antes != fin:
+            llega += f" · antes {pr.mes_corto(antes)}"
+        return f"• {e(meta['nombre'])}: recibe {texto_rango(minimo, maximo)} por cobro → {llega}"
     limite = date.fromisoformat(meta["fecha_limite"])
     antes = pr.aportes_primer_cobro(p).get(meta_id, 0.0)
     espera, despues, cuando = fases(r, meta_id)
@@ -410,12 +468,20 @@ def propuesta(clave):
         cambian = [i for i in v["cambios"] if i in antes and (abs(antes[i] - nuevo.get(i, 0.0)) >= 0.5
                    or v["cambios"][i].get("fecha_limite", metas.obtener(i)["fecha_limite"]) != metas.obtener(i)["fecha_limite"])]
         ids = list(dict.fromkeys(v["reducidas"] + cambian))
+        if v["resultado"].get("reparto"):
+            ids = [i for i in v["cambios"] if i in antes or i in nuevo]
         lineas += [describir_meta(p, v, i, fines) for i in ids]
         icono, veredicto = pr.veredicto(v["resultado"])
         lineas.append(f"{icono} {veredicto} · acabas con {euros(v['resultado']['final'])}")
         filas.append([(f"✅ Aplicar: {'⭐ ' if recomendada else ''}{v['nombre']}", f"pra:{clave}:{v['codigo']}")])
         comparar.append((v["corto"].capitalize(), v["resultado"]))
-        for color, meta_id in enumerate(v["reducidas"][:2]):
+        if v["resultado"].get("reparto"):
+            for color, meta_id in enumerate(ids[:2]):
+                nombre_meta = metas.obtener(meta_id)["nombre"][:12]
+                for estilo, proyeccion_, etiqueta in (("discontinua", p, "ahora"), ("continua", v["resultado"], "propuesta")):
+                    lineas_grafico.append((f"{nombre_meta} · {etiqueta}", color, estilo,
+                                           [c["por_meta"].get(meta_id, (0.0, False))[0] for c in proyeccion_["ciclos"]]))
+        for color, meta_id in enumerate(v["reducidas"][:2] if not v["resultado"].get("reparto") else []):
             lineas_grafico.append((f"{metas.obtener(meta_id)['nombre'][:12]} · {v['corto']}", color,
                                    "continua" if n == 0 else "discontinua",
                                    [c["por_meta"].get(meta_id, (0.0, False))[0] for c in v["resultado"]["ciclos"]]))
@@ -428,6 +494,7 @@ def propuesta(clave):
     if lineas_grafico:
         imagenes.append(go.cuotas(lineas_grafico, [c["fecha"] for c in p["ciclos"]], pie(p),
                                   "Cuota de tus metas, cobro a cobro",
+                                  "Lo que recibe cada meta de lo que sobra en cada cobro" if p["reparto"] else
                                   "Baja mientras espera; después sube (recuperar) o vuelve a la normal (aplazar)"))
     return "\n".join(lineas), imagenes, filas
 
@@ -447,6 +514,24 @@ def orden(ids):
     if elegidas:
         filas.append([("✅ Ver la propuesta", "pro:ok"), ("↩️ Empezar de nuevo", "pro:x")])
     filas.append([("⬅️ Ajustar", "pr:aju")])
+    return texto, [], filas
+
+
+def pantalla_reparto():
+    activo = reparto.activo()
+    minimo = pr.libre_minimo()
+    texto = ("🔀 <b>Reparto automático</b>\n"
+             f"Ahora: <b>{'activado' if activo else 'apagado'}</b>.\n\n"
+             f"Con el reparto, en cada cobro: lo que entra − todos tus pagos − <b>tu libre ({euros(minimo)})</b> = lo que "
+             "sobra, y <b>todo lo que sobra va a tus metas</b>. Si llegabas al cobro en negativo, primero se tapa eso.\n\n"
+             "<b>¿Cómo se reparte entre tus metas?</b>\n"
+             + "\n".join(f"{'✅' if activo and reparto.modo() == clave else '▫️'} {nombre}" for clave, nombre in reparto.MODOS.items())
+             + "\n\n<i>Lo que te deben entra al reparto solo cuando confirmas que te han pagado. Las prioridades (🥇) "
+               "las eliges en ⚖️ Ajustar.</i>")
+    filas = [[("🧮 Necesario + prioridad", "pr:rep:m:necesario"), ("🥇 En cascada", "pr:rep:m:cascada")],
+             [("⏸️ Apagar el reparto" if activo else "✅ Activar el reparto", "pr:rep:off" if activo else "pr:rep:on"),
+              (f"💸 Tu libre: {euros_cortos(minimo)}", "pr:lib")],
+             [("⬅️ Proyección", "pr:res")]]
     return texto, [], filas
 
 
@@ -500,7 +585,7 @@ def salario():
 
 
 PANTALLAS = {"res": resumen, "mes": mes_a_mes, "cal": calendario, "met": pantalla_metas, "esc": pantalla_escenarios,
-             "hz": horizonte, "sal": salario, "lib": libre}
+             "hz": horizonte, "sal": salario, "lib": libre, "rep": pantalla_reparto}
 
 
 # =====================================================================
@@ -531,6 +616,16 @@ async def boton(update, context, partes):  # noqa: C901  (enrutador de botones d
         opcion = partes[1]
         if opcion in ("hz", "sal", "lib") and len(partes) > 2:
             context.user_data.pop("espera", None)  # eligió con un botón: ya no espera texto
+        if opcion == "rep" and len(partes) > 2:
+            if partes[2] == "m":
+                config.guardar("REPARTO_MODO", partes[3])
+                config.guardar("REPARTO_AUTO", "1")
+            else:
+                config.guardar("REPARTO_AUTO", "1" if partes[2] == "on" else "0")
+            if reparto.activo():
+                await asyncio.to_thread(reparto.fijar_ciclo_actual)
+            await enviar(context, pantalla_reparto)
+            return "Reparto " + ("activado" if reparto.activo() else "apagado")
         if opcion == "lib" and len(partes) > 2:
             config.guardar("LIBRE_MINIMO", partes[2])
             await enviar(context, resumen)

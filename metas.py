@@ -154,17 +154,24 @@ def pendientes_ahora():
 
 
 def aporte_previsto(meta, d=None):
-    """Lo que toca aportar en el ciclo actual (cuota reducida si está en tramo, la fija o la necesaria)."""
+    """Lo que toca aportar en el ciclo actual: su parte del reparto automático si el ciclo lo tiene (v11);
+    si no, la cuota reducida si está en tramo, la fija o la necesaria."""
     d = d or hoy()
     inicio = ciclo.inicio(d)
+    import reparto
+    parte = reparto.de_meta(meta["id"], inicio.isoformat())
+    falta = max(0.0, meta["objetivo"] - ahorrado_en(meta, inicio - timedelta(days=1)))
+    if parte is not None:
+        return round(min(parte, falta), 2)
     return cuota(meta, ahorrado_en(meta, inicio - timedelta(days=1)), inicio, pendientes_ahora())
 
 
 def en_espera(meta, d=None):
     """Texto corto si ahora aporta la cuota reducida de un tramo («hasta conseguir X»), o None."""
     d = d or hoy()
-    if not tramo_activo(meta, ciclo.inicio(d), pendientes_ahora()):
-        return None
+    import reparto
+    if reparto.activo() or not tramo_activo(meta, ciclo.inicio(d), pendientes_ahora()):
+        return None  # con el reparto automático no hay tramos: cada meta recibe su parte de lo que sobra
     return describir_hasta(meta["tramo_hasta"])
 
 

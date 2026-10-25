@@ -11,6 +11,7 @@ Solo habla con TELEGRAM_CHAT_ID. Lo arranca principal.py.
 import asyncio
 import html
 import logging
+import os
 from datetime import date, time, timedelta
 
 import requests
@@ -28,6 +29,7 @@ import bot_metas
 import bot_proyeccion
 import ciclo
 import colchon
+import reparto
 import config
 import consultas
 import contador
@@ -42,18 +44,20 @@ from formato import (DIAS_SEMANA, euros, euros_cortos, leer_entero, leer_fecha, 
 from movimientos import CATEGORIAS
 
 # Súbelo y cambia NOVEDADES en cada actualización con cambios visibles: el bot las anuncia una vez.
-VERSION = 10
-NOVEDADES = ("✨ <b>Bot actualizado: versión 10</b>\n\n"
-             "• 🥇 <b>Priorizar metas, bien hecho</b>: cuando el dinero no llega, eliges qué meta va primero (o varias en "
-             "orden). Las demás aportan menos (o nada) <b>solo mientras tanto</b>; cuando consigues la prioritaria:\n"
-             "   🔁 <b>Recuperar</b>: suben lo necesario para llegar a su fecha, o\n"
-             "   📅 <b>Aplazar</b>: vuelven a su cuota normal y llegan más tarde.\n"
-             "   Ves las dos opciones con sus números y gráficos, el bot recomienda una ⭐ y tú eliges (o lo ignoras).\n"
-             "• 💸 <b>Libre mínimo por cobro</b> (📈 Proyección): dices cuánto dinero quieres que te quede libre en cada "
-             "cobro (o 0 € para destinar todo el salario a pagos y metas) y las propuestas se ajustan a eso.\n"
-             "• ✂️ <b>Recortar</b> ahora es temporal: aportar menos o nada hasta que vuelva a caber, y después se aplaza.\n"
-             "• Los recordatorios piden la cuota de cada momento y la ficha de cada meta te dice si está en espera.\n"
-             "• 🔧 Arreglado: antes, al priorizar, el recorte se quedaba para siempre.")
+VERSION = 11
+NOVEDADES = ("✨ <b>Bot actualizado: versión 11</b>\n\n"
+             "• 🔀 <b>Reparto automático (activado)</b>: en cada cobro, lo que entra − todos tus pagos − <b>tu libre</b> "
+             "(el que elijas en 📈 Proyección › 💸) = lo que sobra, y <b>todo lo que sobra va a tus metas</b>. Tu libre "
+             "es tuyo, ni más ni menos; las metas reciben más los meses con menos pagos.\n"
+             "• Dos formas de repartir entre tus metas (las cambias cuando quieras en 📈 Proyección › 🔀):\n"
+             "   🧮 <b>Necesario + prioridad</b>: lo justo para que cada meta llegue a su fecha y el resto a la 1.ª "
+             "prioritaria.\n"
+             "   🥇 <b>En cascada</b>: todo a la 1.ª prioritaria hasta completarla, luego a la siguiente.\n"
+             "• Al cobrar, el plan te dice exactamente cuánto mover a cada meta (y a qué cuenta). Si llegabas al cobro "
+             "en negativo, primero se tapa eso.\n"
+             "• 🤝 Cuando confirmas que te han pagado algo que te debían, te digo a qué metas moverlo.\n"
+             "• 🏆 Si completas todas tus metas, lo que sobra queda libre y te aviso por si quieres crear otra.\n"
+             "• 🔧 Arreglado: el veredicto ya avisa si hasta el próximo cobro te falta dinero.")
 VERSION_ANUNCIADA = config.BASE / "version_anunciada.txt"
 
 B_SALDO, B_ANALISIS, B_DEUDAS, B_METAS, B_RECORDATORIOS, B_AJUSTES, B_PROYECCION = (
@@ -381,6 +385,10 @@ async def guardar_cobro(update, context, importe, tipo, fecha, movimiento_id=Non
                              (fecha - timedelta(days=4)).isoformat(), (fecha + timedelta(days=4)).isoformat())
         movimiento_id = parecido["id"] if parecido else None
     anterior = ciclo.inicio(fecha - timedelta(days=1))
+    hueco = 0.0
+    if tipo == "salario" and reparto.activo():
+        ya_en_saldo = bool(movimiento_id and datos.uno("SELECT 1 AS si FROM movimientos WHERE id = ?", movimiento_id))
+        hueco = await asyncio.to_thread(reparto.hueco_antes_de_cobrar, importe, ya_en_saldo)
     ingreso = datos.ejecutar("INSERT INTO ingresos (fecha, importe, tipo, movimiento_id, creado) VALUES (?, ?, ?, ?, ?)",
                              fecha.isoformat(), importe, tipo, movimiento_id, config.ahora().isoformat())
     accion = datos.registrar_accion("ingresos", ingreso, "DELETE FROM ingresos WHERE id = ?1",
@@ -393,12 +401,40 @@ async def guardar_cobro(update, context, importe, tipo, fecha, movimiento_id=Non
         if config.aviso_activo("AVISO_RESUMEN_CICLO") and anterior < fecha:
             await enviar(context, analisis.texto_resumen_ciclo_cerrado(anterior, fecha))
         colchon.actualizar_objetivo()
+        await asyncio.to_thread(reparto.fijar_ciclo, fecha, importe, hueco)
         filas = []
         if deudas.pendientes():
             filas.append([("✅ Marcar pagos hechos", "d:pagar")])
         if any(metas.pendiente_ciclo(m) > 0 for m in metas.activas()):
             filas.append([("🎯 Marcar dinero movido", "mt:lista")])
+        if not metas.activas() and reparto.activo():
+            filas.append([("🎯 Crear una meta", "g:nueva")])
         await enviar(context, analisis.texto_al_cobrar(), filas or None)
+
+
+async def repartir_lo_que_te_pagan(context, deuda):
+    """Te han pagado algo que te debían: con el reparto automático, todo va a tus metas (tu libre no cambia)."""
+    if not deudas.me_deben(deuda) or not reparto.activo() or not metas.activas():
+        return
+    importe = datos.valor("SELECT importe FROM pagos WHERE deuda_id = ? ORDER BY id DESC LIMIT 1", deuda["id"]) or 0
+    if importe <= 0:
+        return
+    asignado, sobra = await asyncio.to_thread(reparto.extra, importe)
+    if not asignado:
+        return
+    nombres = {c["uid"]: consultas.nombre_cuenta(c) for c in consultas.cuentas()}
+    lineas = [f"🤝 Te han pagado {euros(importe)}: según tu reparto, van a tus metas:"]
+    filas = []
+    for meta_id, parte in asignado.items():
+        meta = metas.obtener(meta_id)
+        destino = f"muévelos a «{e(nombres.get(meta['uid'], 'su cuenta'))}»" if meta["uid"] else "apártalos"
+        lineas.append(f"   → {e(meta['nombre'])}: <b>{euros(parte)}</b> ({destino})")
+        if not meta["uid"]:
+            filas.append([(f"✅ Apartado: {meta['nombre'][:16]} {euros_cortos(parte)}", f"ma:{meta_id}:{parte}")])
+    if sobra > 0.004:
+        lineas.append(f"   Sobran {euros(sobra)}: tus metas ya están completas, quedan libres.")
+    filas.append([("✅ Hecho", "borrar")])
+    await enviar(context, "\n".join(lineas), filas)
 
 
 async def crear_recordatorio(context, espera, hora):
@@ -867,6 +903,10 @@ async def anunciar_novedades(context: ContextTypes.DEFAULT_TYPE):
     VERSION_ANUNCIADA.write_text(str(VERSION))
     if anunciada and anunciada < 10:
         await revisar_metas_tarde(context)
+    if anunciada < 11 and "REPARTO_AUTO" not in os.environ:
+        # v11: el reparto automático se activa al actualizar (decisión del usuario); este ciclo también se reparte.
+        config.guardar("REPARTO_AUTO", "1")
+        await asyncio.to_thread(reparto.fijar_ciclo_actual)
 
 
 async def error_no_controlado(update, context: ContextTypes.DEFAULT_TYPE):

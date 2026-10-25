@@ -5,7 +5,7 @@ Bot de Telegram de finanzas personales para Windows. El usuario NO programa: ins
 último `INSTALAR.bat` de la rama `claude/sweet-thompson-41bsdc` y lo ejecuta con `--actualizar`.
 Toda actualización debe funcionar con ese doble clic, sin que el usuario toque nada.
 
-## Funcionalidad (v5 → v10)
+## Funcionalidad (v5 → v11)
 
 - El banco se consulta UNA vez al día (`actualizacion.py`, hora `HORA_SALDO_DIARIO`, 00:00 por
   defecto) o con «🔄 Actualizar ahora» (Ajustes, con confirmación). Descarga saldos y movimientos
@@ -80,6 +80,15 @@ Toda actualización debe funcionar con ese doble clic, sin que el usuario toque 
   en orden; `prq:`, `pro:`), ✂️ Recortar (menos / nada, hasta un cobro, luego aplazar), 📅 Alargar, 🚀 Acelerar
   (todo lo que sobra por encima del libre mínimo). Aplicar `pra:CLAVE:VARIANTE`, con deshacer; o ignorar.
   Aviso único al actualizar (`v10_metas_tarde`) para metas con cuota fija antigua que ya no llegan.
+- v11 · Reparto automático (`reparto.py`, `REPARTO_AUTO`, `REPARTO_MODO`): en cada cobro, entra − pagos − tu libre
+  (`LIBRE_MINIMO`, fijo) − hueco (si llegabas en negativo) = sobrante, que va ENTERO a las metas: «necesario» (lo
+  justo para cada fecha por orden de prioridad y el resto en cascada) o «cascada» (todo a la 1.ª hasta completarla).
+  Orden: prioridad, colchón, fecha. En la vida real el reparto se fija al registrar el salario (`reparto_ciclos`,
+  `reparto_metas`; `metas.aporte_previsto` usa esa parte) y no cambia en el ciclo; al activarlo a mitad de ciclo
+  se reparte también el ciclo actual (`fijar_ciclo_actual`). Lo que te deben entra solo al confirmar que te
+  pagaron (`bot.repartir_lo_que_te_pagan`). Con el reparto activo no hay tramos ni simulador por meta; propuestas:
+  priorizar (orden) y poner a cada meta la fecha en que llega. Se activa al actualizar a la v11 si la clave no
+  está en el .env. Si todas las metas se completan, el sobrante queda libre (hito «todas», botón crear meta).
 - El banco solo se consulta en: actualización diaria, su recuperación si el PC estaba apagado,
   «Actualizar ahora» y tras renovar el permiso (si ese día no había datos). El usuario pidió dejarlo así.
 
@@ -100,7 +109,7 @@ Toda actualización debe funcionar con ese doble clic, sin que el usuario toque 
   `LIMITE_CONSULTAS_DIA`, `HORA_SALDO_DIARIO`, `SALDO_DIARIO_ACTIVO`, `DIA_COBRO_DESDE`, `DIA_COBRO_HASTA`,
   `PRESUPUESTO_CICLO`, `UMBRAL_SALDO_BAJO`, `HORA_AVISO_PAGO`, `FRANJA_DEUDAS_DESDE`, `FRANJA_DEUDAS_HASTA`,
   `DIAS_AVISO_SIN_DIA`, `COLCHON_ACTIVO`, `COLCHON_MESES`, `SALARIO_ESTIMADO`, `PROYECCION_HASTA`,
-  `LIBRE_MINIMO`, `AVISO_*`).
+  `LIBRE_MINIMO`, `REPARTO_AUTO`, `REPARTO_MODO`, `AVISO_*`).
   Una clave nueva debe tener valor por defecto (`config.POR_DEFECTO`) o pedirse solo si falta.
 - La actualización copia los archivos del repositorio encima de `%LOCALAPPDATA%\FinanzasBot` con
   robocopy y borra una lista fija de archivos obsoletos (en `INSTALAR.bat`). Los archivos que genera
