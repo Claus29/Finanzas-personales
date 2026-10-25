@@ -5,7 +5,7 @@ Nunca se da nada por pagado: solo cuenta lo que confirmas con «✅».
 """
 import asyncio
 import math
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 
 import analisis
 import analisis_deudas
@@ -13,10 +13,12 @@ import ciclo
 import config
 import deudas
 import graficos
-from formato import euros, euros_cortos, fecha_corta, leer_entero, leer_fecha, leer_importe, sumar_meses
+from formato import (dia_del_mes, euros, euros_cortos, fecha_corta, leer_entero, leer_fecha, leer_importe,
+                     sumar_meses)
 
 PREFIJOS = {"d", "dn", "dnf", "dnm", "dpy", "dpf", "dpm", "dpc", "dps", "dgu", "dp", "dot", "dparte", "dsk", "dsq",
-            "dig", "dm", "da", "dap", "de", "dcfg", "dcs", "dbo", "dbos", "ad"}
+            "dig", "dm", "da", "dap", "de", "dcfg", "dcs", "dbo", "dbos", "ad",
+            "dpx", "dcb", "dmo", "dvc"}  # v12: empieza en el próximo cobro, con el cobro, cambiar modo, verificar
 EXPLICACION = {
     "fecha": "una cantidad con día de pago",
     "cobro": "se paga una sola vez, en cuanto cobres",
@@ -38,6 +40,37 @@ def hoy():
 
 def _datos(espera):
     return {k: v for k, v in espera.items() if k != "paso"}
+
+
+def _mes_de(texto):
+    return date(int(texto[:4]), int(texto[5:7]), 1)
+
+
+def primera_cuota(espera):
+    """Fecha de la 1.ª cuota de una deuda con día fijo que se está apuntando (o None)."""
+    if espera.get("modo") != "dia" or not espera.get("dia") or not espera.get("desde"):
+        return None
+    mes = _mes_de(espera["desde"])
+    return dia_del_mes(mes.year, mes.month, int(espera["dia"]))
+
+
+def texto_primera(espera):
+    """Línea del resumen: cuándo es la 1.ª cuota y si resta ya de tu saldo neto."""
+    if espera.get("sentido") == "me_deben":
+        return ""
+    proximo = ciclo.proximo_cobro()
+    if espera.get("modo") == "cobro":
+        if len(espera.get("desde", "")) == 10 and espera["desde"] <= hoy().isoformat():
+            return "📌 1.ª cuota: con el cobro que ya cobraste · <b>se resta ya</b> de tu saldo neto"
+        return f"📌 1.ª cuota: con tu próximo cobro (~{fecha_corta(proximo)}) · no se resta hasta que cobres"
+    if espera.get("primera") == "cobro":
+        return f"📌 1.ª cuota: con tu próximo cobro (~{fecha_corta(proximo)}) · no se resta hasta que cobres"
+    vence = primera_cuota(espera)
+    if not vence:
+        return ""
+    if vence < proximo:
+        return f"📌 1.ª cuota: {fecha_corta(vence)}, antes de tu cobro · <b>se resta ya</b> de tu saldo neto"
+    return f"📌 1.ª cuota: {fecha_corta(vence)} · no se resta hasta el ciclo de ese día"
 
 
 # =====================================================================
@@ -80,6 +113,10 @@ async def ver(update, context, deuda_id, nuevo=False):
         if not te_deben and deudas.modo(deuda) == "dia":
             segunda.append(("📅 Aplazar", f"da:{deuda_id}:{per}"))
         filas.append(segunda)
+        if not te_deben and any(i["deuda"]["id"] == deuda_id and i["periodo"] == per for i in deudas.pendientes()):
+            filas.append([("💶 Esta cuota, con el próximo cobro", f"dcb:{deuda_id}:{per}")])
+    if not te_deben and deuda["tipo"] in deudas.MENSUALES:
+        filas.append([("🔁 Cambiar cuándo se paga", f"dmo:{deuda_id}")])
     if deuda["tipo"] == "plazos":
         filas.append([("⚙️ Si una cuota no se paga", f"dcfg:{deuda_id}")])
         campos = [("✏️ Total", "importe"), ("✏️ Cuota", "cuota")]
@@ -147,6 +184,22 @@ async def preguntar_modo(context, espera, texto_previo=""):
 async def siguiente(update, context, espera):
     """Decide el siguiente paso cuando ya se sabe cuándo se paga."""
     b = _b()
+    vence = primera_cuota(espera)
+    if (vence and espera.get("sentido", "debo") == "debo" and "primera" not in espera
+            and vence < ciclo.proximo_cobro()):
+        # v12: la 1.ª cuota cae antes del próximo cobro → se restaría ya del saldo neto. Se pregunta siempre.
+        proximo = ciclo.proximo_cobro()
+        que = "La <b>1.ª cuota</b>" if espera["tipo"] == "plazos" else "El <b>primer pago</b>"
+        lo = "la" if espera["tipo"] == "plazos" else "lo"
+        importe = espera.get("cuota") or espera["importe"]
+        b.esperar(context, "deuda_verificar", **_datos(espera))
+        pasada = " (ya pasó y no está pagada)" if vence < hoy() else ""
+        return await b.enviar(context, f"📌 {que} ({euros(importe)}) es el <b>{fecha_corta(vence)}</b>{pasada}, "
+                                       f"antes de tu cobro (~{fecha_corta(proximo)}).\nSi {lo} pagas este ciclo, "
+                                       f"se resta ya de tu saldo neto. ¿Cuándo {lo} pagas?",
+                              [[("✅ Este ciclo", "dvc:este")],
+                               [(f"💶 En cuanto cobre (~{fecha_corta(proximo)})", "dvc:cobro")],
+                               [("📅 Empiezo el mes que viene", "dvc:sig")], b.CANCELAR])
     if espera["tipo"] == "plazos" and "si_no_paga" not in espera:
         b.esperar(context, "deuda_si_no_paga", **_datos(espera))
         quien = "no te paga" if espera.get("sentido") == "me_deben" else "no se paga"
@@ -172,6 +225,9 @@ def texto_resumen(espera):
               f"Quedan <b>{euros(round(espera['importe'] - ya, 2))}</b>: {texto_plan(espera).lower().replace('será', '').replace('serán', '').strip().rstrip('.')}",
               f"Cada cuota: {cuando}",
               f"Si una cuota no se paga: {deudas.SI_NO_PAGA[espera['si_no_paga']]}"]
+    primera = texto_primera(espera)
+    if primera:
+        lineas.append(primera)
     return "\n".join(lineas) + "\n\n¿Lo guardo?"
 
 
@@ -196,6 +252,8 @@ async def crear(update, context, d):
                                         if ciclo.cobrado_este_mes() else hoy().isoformat())
     else:
         deuda_id, accion = deudas.crear(nombre, "sin_fecha", importe, sentido=sentido)
+    if d.get("primera") == "cobro" and deudas.modo(deudas.obtener(deuda_id)) == "dia":
+        deudas.al_cobro(deuda_id, d["desde"][:7])  # la 1.ª cuota, con el próximo cobro (todo el plan se mueve)
     deuda = deudas.obtener(deuda_id)
     b.logging.info("Apuntado: %s", nombre)
     (h1, m1), (h2, m2) = config.franja_deudas()
@@ -204,6 +262,8 @@ async def crear(update, context, d):
         nota = "\n💡 Cuando sepas el día, pónselo (📅 Poner día de pago) y te lo recordaré."
     else:
         nota = f"\n🔔 Te lo recordaré entre las {h1:02d}:{m1:02d} y las {h2:02d}:{m2:02d} hasta que lo confirmes."
+    if sentido == "debo" and deuda["tipo"] != "sin_fecha":
+        nota = f"\n{analisis.texto_en_neto(deuda)}" + nota
     await b.enviar(context, f"✅ Apuntado:\n{analisis.linea_deuda(deuda)}{nota}",
                    b.con_deshacer(accion, [[("💳 Ver deudas", "m:deudas")]]))
     await b.avisar_proyeccion(context)
@@ -288,6 +348,23 @@ async def responder(update, context, espera, escrito):
                            [[("✅ Sí", "dnm:siguiente"), ("❌ Aún no", "dnm:este")], b.CANCELAR])
         else:
             await siguiente(update, context, {**espera, "desde": f"{d:%Y-%m}"})
+        return True
+    if paso == "deuda_nuevo_dia":  # 🔁 cambiar a día fijo
+        dia = leer_entero(escrito, 1, 31)
+        if not dia:
+            await b.repetir(update, "Escribe un día del 1 al 31.")
+            return True
+        context.user_data.pop("espera", None)
+        deuda_id = espera["deuda"]
+        texto, accion, per = deudas.cambiar_modo(deuda_id, "dia", dia)
+        filas = [[("👀 Ver", f"d:ver:{deuda_id}")]]
+        vence = deudas.vencimiento(deudas.obtener(deuda_id), per)
+        if vence < ciclo.proximo_cobro():
+            texto += (f".\n📌 Cae antes de tu cobro, así que <b>se resta ya</b> de tu saldo neto. "
+                      "Si prefieres pagarla en cuanto cobres, pulsa 💶")
+            filas.insert(0, [("💶 Esa cuota, con el próximo cobro", f"dcb:{deuda_id}:{per}")])
+        await b.enviar(context, f"🔁 {analisis.e(deudas.obtener(deuda_id)['nombre'])}: {texto}.",
+                       b.con_deshacer(accion, filas))
         return True
     if paso == "deuda_fecha":
         fecha = leer_fecha(escrito, d)
@@ -386,6 +463,45 @@ async def boton(update, context, partes):  # noqa: C901  (enrutador de botones d
         await b.mostrar(update, context, f"{deudas.TIPOS[partes[1]]}\n{pregunta} (ej. <b>{ejemplo}</b>)", [b.CANCELAR])
         return None
 
+    if clave == "dcb":  # 💶 esta cuota, con el próximo cobro (todo el plan se mueve)
+        deuda_id, per = int(partes[1]), ":".join(partes[2:])
+        deuda = deudas.obtener(deuda_id)
+        if not deuda or deuda["activa"] != 1 or per in deudas.periodos_pagados(deuda_id):
+            await b.mostrar(update, context, "Esa cuota ya no está pendiente.")
+            return None
+        texto, accion = deudas.al_cobro(deuda_id, per)
+        await b.mostrar(update, context, f"💶 {analisis.e(deuda['nombre'])}: {texto}.\n<i>No cuenta como pagada: "
+                                         "te la recordaré con el cobro.</i>",
+                        b.con_deshacer(accion, [[("🧮 Saldo neto", "m:neto")]]) if accion else [[("🧮 Saldo neto", "m:neto")]])
+        return None
+    if clave == "dmo":  # 🔁 cambiar cuándo se paga: día fijo ↔ en cuanto cobre
+        deuda = deudas.obtener(int(partes[1]))
+        if len(partes) == 2:
+            actual = "💶 en cuanto cobras" if deudas.modo(deuda) == "cobro" else f"📅 el día {deuda['dia']} de cada mes"
+            await b.mostrar(update, context, f"🔁 «{analisis.e(deuda['nombre'])}» ahora se paga {actual}.\n"
+                                             "¿Cuándo quieres pagar cada cuota?",
+                            [[("📅 Un día fijo del mes", f"dmo:{deuda['id']}:dia")],
+                             [("💶 En cuanto cobro", f"dmo:{deuda['id']}:cobro")],
+                             [("⬅️ Volver", f"d:ver:{deuda['id']}")]])
+            return None
+        if partes[2] == "dia":
+            b.esperar(context, "deuda_nuevo_dia", deuda=deuda["id"])
+            await b.mostrar(update, context, "📅 ¿Qué <b>día del mes</b>? (1-31)", [b.CANCELAR])
+            return None
+        texto, accion, _ = deudas.cambiar_modo(deuda["id"], "cobro")
+        await b.mostrar(update, context, f"🔁 {analisis.e(deuda['nombre'])}: {texto}.",
+                        b.con_deshacer(accion, [[("👀 Ver", f"d:ver:{deuda['id']}")]]))
+        return None
+    if clave == "dvc":  # verificación al apuntar: la 1.ª cuota cae antes del cobro
+        if espera.get("paso") != "deuda_verificar":
+            return "Empieza otra vez desde 💳 Deudas"
+        datos_espera = _datos(espera)
+        if partes[1] == "sig":
+            mes = _mes_de(datos_espera["desde"])
+            datos_espera["desde"] = f"{sumar_meses(mes, 1, 1):%Y-%m}"
+        await siguiente(update, context, {**datos_espera, "primera": partes[1]})
+        return None
+
     # --- Pasos guiados con botones
     if clave in ("dnf", "dpy", "dpf", "dpm", "dpc", "dps", "dgu", "dnm") and not espera.get("paso", "").startswith("deuda_"):
         return "Empieza otra vez desde 💳 Deudas"
@@ -412,9 +528,14 @@ async def boton(update, context, partes):  # noqa: C901  (enrutador de botones d
         elif partes[1] == "cobro":
             if ciclo.cobrado_este_mes(d):
                 b.esperar(context, "deuda_modo", **_datos(espera))
-                que = "la cuota" if espera["tipo"] == "plazos" else "el pago"
-                await b.mostrar(update, context, f"Ya cobraste este mes. ¿Ya está pagado {que} de este cobro?",
-                                [[("✅ Sí", "dpc:si"), ("❌ Aún no", "dpc:no")], b.CANCELAR])
+                salario = ciclo.ultimo_salario(d)
+                cuando = f"el {salario['fecha'][8:10]}/{salario['fecha'][5:7]}" if salario else "este mes"
+                que = "la 1.ª cuota" if espera["tipo"] == "plazos" else "el primer pago"
+                await b.mostrar(update, context, f"Ya cobraste {cuando}. ¿Con qué cobro pagas {que}?",
+                                [[("⏭️ Con el próximo cobro", "dpc:si")],
+                                 [("💶 Con el que ya cobré, aún sin pagar", "dpc:no")],
+                                 [("✅ Con el que ya cobré, ya pagada" if espera["tipo"] == "plazos"
+                                   else "✅ Con el que ya cobré, ya pagado", "dpc:si")], b.CANCELAR])
             else:
                 await siguiente(update, context, {**espera, "desde": d.isoformat()})
         else:  # sin día fijo
@@ -426,6 +547,14 @@ async def boton(update, context, partes):  # noqa: C901  (enrutador de botones d
         salario = ciclo.ultimo_salario(d)
         desde = (d + timedelta(days=1)).isoformat() if partes[1] == "si" or not salario else salario["fecha"]
         await siguiente(update, context, {**espera, "desde": desde})
+        return None
+    if clave == "dpx":
+        deuda = deudas.obtener(int(partes[1]))
+        if not deuda or not deudas.cuota_de_cobro_ya_cobrado(deuda):
+            await b.mostrar(update, context, "Eso ya no hace falta: no hay ninguna cuota de un cobro ya cobrado.")
+            return None
+        texto, accion = deudas.empezar_en_proximo_cobro(deuda["id"])
+        await b.mostrar(update, context, f"⏭️ {analisis.e(deuda['nombre'])}: {texto}.", b.con_deshacer(accion))
         return None
     if clave == "dnm":
         mes = d if partes[1] == "este" else sumar_meses(d, 1, 1)
@@ -506,7 +635,7 @@ async def boton(update, context, partes):  # noqa: C901  (enrutador de botones d
             await b.mostrar(update, context, "Escribe la nueva fecha (ej. <b>28/11</b>):", [b.CANCELAR])
             return None
         if opcion == "cobro":
-            resultado = deudas.aplazar(deuda_id, per, al_cobro=True)
+            resultado, _ = deudas.al_cobro(deuda_id, per)
         else:
             resultado = deudas.aplazar(deuda_id, per, nueva_fecha=d + timedelta(days=int(opcion)))
         await b.mostrar(update, context, f"📅 {analisis.e(deudas.obtener(deuda_id)['nombre'])}: {resultado}.")

@@ -135,11 +135,12 @@ def _deudas(d, ahora, anadir):
                 candidatos.append((4, f"sin:{deuda['id']}:{per}:{d}", texto_sin_dia(item), botones_pago(deuda, per)))
             continue
         if d >= vence:
-            if _al_cobrar(deuda) and vence == d:
+            if _al_cobrar(deuda, per) and vence == d:
                 continue  # el día del cobro va en el mensaje «¡Cobrado!»; desde mañana, un recordatorio por pago
             prioridad = 1 if d > vence else 2
             candidatos.append((prioridad, f"pago:{deuda['id']}:{per}:{d}", texto_pago(item, d), botones_pago(deuda, per)))
-        elif not deudas.me_deben(deuda) and d == vence - timedelta(days=deuda["avisar_dias"]):
+        elif (not deudas.me_deben(deuda) and not _al_cobrar(deuda, per)
+              and d == vence - timedelta(days=deuda["avisar_dias"])):  # con el cobro: sin aviso previo
             candidatos.append((3, f"antes:{deuda['id']}:{per}:{d}",
                                f"🔔 Dentro de {deuda['avisar_dias']} días ({fecha_corta(vence)}): "
                                f"<b>{analisis.e(deuda['nombre'])}</b>{_cuota(deuda, item)} · {euros(item['importe'])}",
@@ -159,8 +160,10 @@ def _deudas(d, ahora, anadir):
             anadir(clave, texto, botones)
 
 
-def _al_cobrar(deuda):
-    return deuda["tipo"] == "cobro" or (deuda["tipo"] in deudas.MENSUALES and deudas.modo(deuda) == "cobro")
+def _al_cobrar(deuda, per=None):
+    """True si el pago va con un cobro (la deuda es «al cobrar» o esta cuota se pasó al cobro)."""
+    return (deuda["tipo"] == "cobro" or (deuda["tipo"] in deudas.MENSUALES and deudas.modo(deuda) == "cobro")
+            or bool(per and deudas.al_cobro_desde(deuda["id"], per)))
 
 
 def _cuota(deuda, item):
@@ -179,7 +182,7 @@ def texto_pago(item, d):
         if d > vence:
             return f"🤝 {nombre} te tenía que pagar {importe} el {fecha_corta(vence)}.\n¿Te ha pagado ya?"
         return f"🤝 Hoy {nombre} te tiene que pagar {importe}.\n¿Te ha pagado?"
-    if d > vence and _al_cobrar(deuda):
+    if d > vence and _al_cobrar(deuda, per):
         return f"💶 Desde que cobraste el {fecha_corta(vence)} tienes pendiente: {nombre} · {importe}.\n¿Ya lo pagaste?"
     if d > vence:
         return f"⚠️ Pendiente desde el {fecha_corta(vence)}: {nombre} · {importe}.\n¿Ya lo pagaste?"
@@ -224,10 +227,12 @@ def botones_pago(deuda, per):
         filas[0].append(("💸 Una parte", f"dparte:{deuda['id']}"))
     else:
         filas[0].append(("💸 Otra cantidad", f"dot:{deuda['id']}:{per}"))
+    if not te_deben and deuda["tipo"] in deudas.MENSUALES:
+        filas.append([("💶 La pago con el próximo cobro", f"dcb:{deuda['id']}:{per}")])
     segunda = []
     if te_deben and deuda["tipo"] == "plazos":
         segunda.append(("⏭️ Saltar este pago", f"dsq:{deuda['id']}:{per}"))
-    elif not te_deben:
+    elif not te_deben and (deuda["tipo"] in deudas.UNICOS or deudas.modo(deuda) == "dia"):
         segunda.append(("📅 Aplazar", f"da:{deuda['id']}:{per}"))
     segunda.append(("🙈 Ignorar", f"dig:{deuda['id']}:{per}"))
     return filas + [segunda]

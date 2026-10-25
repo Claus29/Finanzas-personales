@@ -22,6 +22,10 @@ Las deudas a plazos se llevan por lo que QUEDA (total − pagado):
 - «Otra cantidad» cubre el periodo y la diferencia va al final (más o menos cuotas restantes).
 - Una cuota no pagada en su periodo NUNCA cuenta como pagada. Se puede «pasar al mes siguiente»
   (todo el plan se retrasa un mes) o pagar «las dos juntas» el mes siguiente; o dejarla pendiente.
+- v12 · «💶 La pago con el cobro» (`al_cobro`): una cuota con día fijo pasa al próximo cobro (tabla al_cobro: vence
+  el día del primer salario desde `desde`) y TODO el plan se mueve: la cuota siguiente, si caería en ese mismo ciclo,
+  se salta (saltos con decisión «movida», que no es una cuota sin pagar). Con modo cobro, la cuota pasa al siguiente
+  cobro (saltar «pasar»). `cambiar_modo` cambia una deuda entre día fijo y «en cuanto cobres».
 """
 import math
 from datetime import date, timedelta
@@ -84,8 +88,16 @@ def periodos_pagados(deuda_id):
     return {p["periodo"] for p in pagos(deuda_id)}
 
 
-def saltos(deuda_id):
-    return {s["periodo"]: s["decision"] for s in datos.todos("SELECT * FROM saltos WHERE deuda_id = ?", deuda_id)}
+def saltos(deuda_id, con_movidas=False):
+    """{periodo: decisión} de las cuotas no pagadas en su periodo. «movida» (el periodo que se salta porque la cuota
+    anterior se pagó con el cobro) no es una cuota sin pagar: solo se incluye con `con_movidas`."""
+    return {s["periodo"]: s["decision"] for s in datos.todos("SELECT * FROM saltos WHERE deuda_id = ?", deuda_id)
+            if con_movidas or s["decision"] != "movida"}
+
+
+def al_cobro_desde(deuda_id, per):
+    """Si la cuota `per` (día fijo) se paga con un cobro: desde qué fecha cuenta el salario. Si no, None."""
+    return datos.valor("SELECT desde FROM al_cobro WHERE deuda_id = ? AND periodo = ?", deuda_id, per)
 
 
 def pagado_total(deuda):
@@ -116,6 +128,10 @@ def nombre_periodo(per):
 
 def vencimiento(deuda, per):
     """Día en que vence el periodo `per`, teniendo en cuenta los aplazamientos."""
+    desde = al_cobro_desde(deuda["id"], per)
+    if desde:  # se paga con el cobro: el día del salario (o el próximo cobro estimado, si aún no ha llegado)
+        salario = salario_desde(desde)
+        return date.fromisoformat(salario["fecha"]) if salario else ciclo.proximo_cobro()
     aplazo = datos.valor("SELECT nueva_fecha FROM aplazos WHERE deuda_id = ? AND periodo = ?", deuda["id"], per)
     if aplazo:
         return date.fromisoformat(aplazo)
@@ -157,7 +173,7 @@ def cuotas_pendientes(deuda, hasta):
     `juntas` es cuántas cuotas incluye (más de 1 si se decidió pagar «las dos juntas»).
     """
     pagados = periodos_pagados(deuda["id"])
-    decisiones = saltos(deuda["id"])
+    decisiones = saltos(deuda["id"], con_movidas=True)
     importe_cuota = cuota(deuda)
     queda = restante(deuda)[0] if deuda["tipo"] == "plazos" else math.inf
     acumulado, acumuladas = 0.0, 0
@@ -169,7 +185,7 @@ def cuotas_pendientes(deuda, hasta):
             acumulado, acumuladas = 0.0, 0
             continue
         decision = decisiones.get(per)
-        if decision == "pasar":
+        if decision in ("pasar", "movida"):
             continue  # este periodo no toca: todo el plan se retrasa
         if decision == "juntas":
             acumulado += importe_cuota
@@ -254,6 +270,11 @@ def comprometido_proximo_cobro(d=None):
             queda = restante(deuda)[0] if deuda["tipo"] == "plazos" else cuota(deuda)
             if queda > 0.004:
                 lista.append((deuda, round(min(cuota(deuda), queda), 2)))
+        elif deuda["tipo"] in MENSUALES:
+            proximo = ciclo.proximo_cobro(d)
+            for item in cuotas_pendientes(deuda, proximo + timedelta(days=1)):
+                if item["vence"] >= proximo and al_cobro_desde(deuda["id"], item["periodo"]):
+                    lista.append((deuda, item["importe"]))
     return lista
 
 
@@ -417,6 +438,110 @@ def aplazar(deuda_id, per, nueva_fecha=None, al_cobro=False):
     datos.ejecutar("INSERT OR REPLACE INTO aplazos (deuda_id, periodo, nueva_fecha) VALUES (?, ?, ?)",
                    deuda_id, per, nueva_fecha.isoformat())
     return f"cuota aplazada al {nueva_fecha:%d/%m}"
+
+
+def cuota_de_cobro_ya_cobrado(deuda, d=None):
+    """Si una deuda «al cobrar» tiene su 1.ª cuota (o su pago único) en un salario que ya cobraste, ese salario.
+
+    Pasa cuando se apunta después de cobrar y se contestó que el pago era de ese cobro. Solo si ese salario es el del
+    ciclo actual, la deuda se apuntó después y aún no hay ningún pago (lo ya pagado al apuntarla no cuenta)."""
+    d = d or hoy()
+    if me_deben(deuda) or not deuda["desde"] or len(deuda["desde"]) != 10:
+        return None
+    if deuda["tipo"] != "cobro" and (deuda["tipo"] not in MENSUALES or modo(deuda) != "cobro"):
+        return None
+    if datos.valor("SELECT 1 FROM pagos WHERE deuda_id = ? AND periodo <> ?", deuda["id"], INICIAL):
+        return None
+    salario, ultimo = salario_desde(deuda["desde"], d), ciclo.ultimo_salario(d)
+    if not salario or not ultimo or salario["fecha"] != ultimo["fecha"] or deuda["creada"][:10] <= salario["fecha"]:
+        return None
+    return salario
+
+
+def empezar_en_proximo_cobro(deuda_id):
+    """La deuda «al cobrar» empieza en el próximo cobro (nada se da por pagado). Devuelve (texto, id de acción)."""
+    deuda = obtener(deuda_id)
+    viejo = date.fromisoformat(deuda["desde"][:10]).isoformat()  # validado: va dentro del SQL de deshacer
+    datos.ejecutar("UPDATE deudas SET desde = ? WHERE id = ?", (hoy() + timedelta(days=1)).isoformat(), deuda_id)
+    accion = datos.registrar_accion("deudas", deuda_id, f"UPDATE deudas SET desde = '{viejo}' WHERE id = ?1",
+                                    f"Inicio de «{deuda['nombre']}»")
+    que = "la 1.ª cuota" if deuda["tipo"] in MENSUALES else "el pago"
+    return f"{que} va con tu próximo cobro ({ciclo.proximo_cobro():%d/%m}) y deja de restarse ahora", accion
+
+
+def _validar_periodo(per):
+    """Los periodos van dentro del SQL de deshacer: solo «AAAA-MM» o «AAAA-MM-DD»."""
+    if per[:7] != date.fromisoformat(per[:7] + "-01").isoformat()[:7] or len(per) not in (7, 10):
+        raise ValueError(per)
+    if len(per) == 10:
+        date.fromisoformat(per)
+    return per
+
+
+def inicio_proximo_cobro():
+    """Fecha desde la que cuenta «el próximo cobro»: el día después del último salario registrado (o hoy)."""
+    ultimo = ciclo.ultimo_salario()
+    return (date.fromisoformat(ultimo["fecha"]) + timedelta(days=1)) if ultimo else hoy()
+
+
+def al_cobro(deuda_id, per):
+    """«💶 La pago con el cobro»: esta cuota se paga con el próximo cobro y TODO el plan se mueve (nunca dos cuotas
+    en el mismo cobro; termina un periodo más tarde). Nada se da por pagado. Devuelve (texto, id de acción o None)."""
+    deuda = obtener(deuda_id)
+    if deuda["tipo"] in UNICOS:
+        return aplazar(deuda_id, per, al_cobro=True), None
+    if modo(deuda) == "cobro":
+        if cuota_de_cobro_ya_cobrado(deuda):
+            return empezar_en_proximo_cobro(deuda_id)
+        texto, accion = saltar(deuda_id, per, "pasar")
+        return f"la cuota de {nombre_periodo(per)} pasa a tu próximo cobro (todo el plan se retrasa un cobro)", accion
+    per = _validar_periodo(per)
+    desde = inicio_proximo_cobro()
+    cobro = ciclo.proximo_cobro()
+    datos.ejecutar("INSERT OR REPLACE INTO al_cobro (deuda_id, periodo, desde) VALUES (?, ?, ?)",
+                   deuda_id, per, desde.isoformat())
+    deshacer = f"DELETE FROM al_cobro WHERE deuda_id = ?1 AND periodo = '{per}'"
+    # La cuota siguiente caería en el mismo ciclo que ese cobro: se salta y el plan se mueve un mes.
+    siguiente = periodo(sumar_meses(_mes(per), 1, 1))
+    if vencimiento(deuda, siguiente) < sumar_meses(cobro, 1, cobro.day) and siguiente not in saltos(deuda_id, True):
+        datos.ejecutar("INSERT OR REPLACE INTO saltos (deuda_id, periodo, decision, fecha) VALUES (?, ?, 'movida', ?)",
+                       deuda_id, siguiente, hoy().isoformat())
+        deshacer += f"; DELETE FROM saltos WHERE deuda_id = ?1 AND periodo = '{siguiente}' AND decision = 'movida'"
+    accion = datos.registrar_accion("deudas", deuda_id, deshacer, f"Cuota de «{deuda['nombre']}» al cobro")
+    return (f"la cuota de {nombre_periodo(per)} se paga con tu cobro (~{cobro:%d/%m}) y deja de restarse ahora; "
+            "las siguientes se mueven un mes"), accion
+
+
+def cambiar_modo(deuda_id, nuevo, dia=None):
+    """Cambia cuándo se pagan las cuotas: «cobro» (en cuanto cobres) o «dia» (día fijo `dia`).
+
+    Lo pagado se conserva (se lleva por lo que queda). La cuota de este ciclo, si no está pagada, pasa al nuevo
+    calendario: con «cobro», al próximo cobro; con día fijo, al primer día N que no caiga en un ciclo ya pagado.
+    Devuelve (texto, id de acción, periodo de la 1.ª cuota con el nuevo calendario o None)."""
+    deuda = obtener(deuda_id)
+    viejo_modo = "cobro" if deuda["modo"] == "cobro" else "dia"
+    viejo_dia = int(deuda["dia"]) if deuda["dia"] else None
+    viejo_desde = deuda["desde"] or ""
+    if viejo_desde:
+        _validar_periodo(viejo_desde)
+    deshacer = (f"UPDATE deudas SET modo = '{viejo_modo}', dia = {viejo_dia if viejo_dia else 'NULL'}, "
+                f"desde = {repr(viejo_desde) if viejo_desde else 'NULL'} WHERE id = ?1")
+    if nuevo == "cobro":
+        desde = inicio_proximo_cobro()
+        datos.ejecutar("UPDATE deudas SET modo = 'cobro', desde = ? WHERE id = ?", desde.isoformat(), deuda_id)
+        texto, per = f"desde ahora cada cuota se paga en cuanto cobres (la próxima, con tu cobro ~{ciclo.proximo_cobro():%d/%m})", None
+    else:
+        d = hoy()
+        mes = date(d.year, d.month, 1) if dia >= d.day else sumar_meses(date(d.year, d.month, 1), 1, 1)
+        pagada_este_ciclo = datos.valor("SELECT 1 FROM pagos WHERE deuda_id = ? AND periodo <> ? AND fecha >= ?",
+                                        deuda_id, INICIAL, ciclo.inicio().isoformat())
+        if pagada_este_ciclo and dia_del_mes(mes.year, mes.month, dia) < ciclo.proximo_cobro():
+            mes = sumar_meses(mes, 1, 1)
+        per = periodo(mes)
+        datos.ejecutar("UPDATE deudas SET modo = 'dia', dia = ?, desde = ? WHERE id = ?", dia, per, deuda_id)
+        texto = f"desde ahora cada cuota se paga el día {dia} (la próxima, el {dia_del_mes(mes.year, mes.month, dia):%d/%m})"
+    accion = datos.registrar_accion("deudas", deuda_id, deshacer, f"Cuándo se paga «{deuda['nombre']}»")
+    return texto, accion, per
 
 
 def borrar(deuda_id):

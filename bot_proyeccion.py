@@ -82,11 +82,21 @@ def sin_salario():
             "(💰 Saldo › 💶 Registrar cobro) o escribe uno estimado.", [], [[("💶 Escribir salario estimado", "pr:sal")]])
 
 
-def lineas_cobro(c):
+def texto_antes_del_cobro():
+    """«Antes de tu cobro tienes que pagar …»: los pagos de este ciclo que restan de tu saldo neto."""
+    items = deudas.pendientes()
+    if not items:
+        return None
+    detalle = ", ".join(f"{e(i['deuda']['nombre'])} {euros_cortos(i['importe'])}" for i in items)
+    return f"🧾 Antes del cobro tienes que pagar {euros(sum(i['importe'] for i in items))}: <i>{detalle[:120]}</i>"
+
+
+def lineas_cobro(c, p=None):
     t = c["totales"]
     lineas = [f"💶 Entra {euros(c['salario'])}" + (f" + te devuelven {euros(t['deben'])}" if t["deben"] else "")]
     if c.get("hueco"):
-        lineas.append(f"🕳️ Tapa lo que faltaba antes del cobro: {euros(c['hueco'])} (se queda en tu cuenta)")
+        lineas.append(f"🧾 Primero cubre lo que te faltaba para los pagos de antes del cobro: {euros(c['hueco'])} "
+                      "<i>(se queda en tu cuenta para pagarlos)</i>")
     for clave, icono, nombre in (("fijos", "🏠", "Gastos fijos"), ("subs", "📺", "Suscripciones"),
                                  ("cuotas", "💳", "Cuotas de deudas"), ("unicos", "🧾", "Pagos únicos")):
         if t[clave]:
@@ -96,6 +106,17 @@ def lineas_cobro(c):
         detalle = ", ".join(f"{e(m['nombre'])} {euros_cortos(i)}" for m, i, _ in c["aportes"])
         lineas.append(f"🎯 Metas: −{euros(t['metas'])}  <i>{detalle[:90]}</i>")
     dias = (c["fin"] - c["fecha"]).days
+    if p and p["reparto"]:
+        # Tu libre siempre aparte; lo que sobra (solo si ya no quedan metas por completar) en otra línea.
+        tuyo = round(c["libre"] - c.get("hueco", 0.0), 2)
+        extra = round(tuyo - p["minimo"], 2)
+        if extra > 0.5:
+            lineas.append(f"= <b>💸 Tu libre: {euros(p['minimo'])}</b>")
+            lineas.append(f"➕ <b>Te sobran {euros(extra)} más</b>: tus metas ya están completas, así que no van a metas")
+        else:
+            lineas.append(f"= <b>{'💸' if tuyo >= 0 else '🔴'} Tu libre: {euros(tuyo)}</b>"
+                          + (f" <i>(querías {euros(p['minimo'])})</i>" if extra < -0.5 else ""))
+        return lineas
     lineas.append(f"= <b>{'💸' if c['libre'] >= 0 else '🔴'} Libre: {euros(c['libre'])}</b>"
                   + (f"  (≈ {euros_cortos(c['por_dia'])}/día durante {dias} días)" if c["libre"] > 0 else ""))
     return lineas
@@ -120,11 +141,12 @@ def resumen():
                + (" <i>(todo el salario a pagos y metas)</i>" if not p["minimo"] else "")), "",
               f"{icono} <b>{veredicto}</b>", "",
               f"<b>Hasta el próximo cobro ({fecha_corta(primero['fecha'])})</b>",
-              f"💰 Dinero libre hoy: {euros(p['libre_hoy'])}"
+              *([texto_antes_del_cobro()] if texto_antes_del_cobro() else []),
+              f"💰 Dinero libre hoy (ya descontado): {euros(p['libre_hoy'])}"
               + (f" + te deben {euros(p['deben_hoy'])} este ciclo" if p["deben_hoy"] else ""),
               f"= Llegas al cobro con <b>{euros(p['puente'])}</b> libres", "",
               f"<b>Próximo cobro · {fecha_corta(primero['fecha'])}</b>"]
-    lineas += lineas_cobro(primero)
+    lineas += lineas_cobro(primero, p)
     libre_total = sum(c["libre"] for c in ciclos)
     pagos = sum(c["pagos"] for c in ciclos)
     a_metas = sum(c["totales"]["metas"] for c in ciclos)
@@ -150,6 +172,8 @@ def resumen():
     if any(not x["especial"] and fines.get(x["id"]) is None for x in p["metas"]):
         lineas.append("• ⚠️ Alguna meta no llega nunca con la aportación actual: mira 🎯 Metas")
     filas = botones_menu("res")
+    if deudas.pendientes():
+        filas = [[("🧾 Pagos de antes del cobro (✅ / 💶)", "m:neto")]] + filas
     if not p["cumple"] and not pr.ignorada(p):
         lineas += ["", "⚖️ <b>Así no te queda lo que quieres.</b> Elige qué meta priorizar (las demás esperan y después "
                        "recuperan o se aplazan) o mira todas las propuestas."]
@@ -177,6 +201,8 @@ def mes_a_mes():
     filas_tabla.append(f"{'hoy':<7}" + (" " * 6 if varia else "") + f"{'':>6}{'':>6}{'':>7}{entero(p['puente']):>8}")
     for c in ciclos:
         marca = " !" if c["estado"] == "🔴" else (" ·" if c["estado"] == "🟡" else "")
+        if not marca and p["reparto"] and c["libre"] - c["hueco"] > p["minimo"] + 0.5:
+            marca = " +"  # tus metas ya están completas: lo que sobra queda libre
         filas_tabla.append(f"{pr.mes_corto(c['fecha']):<7}"
                            + (f"{entero(c['salario'] + c['totales']['deben']):>6}" if varia else "")
                            + f"{entero(-c['pagos']):>6}{entero(-c['totales']['metas']):>6}{entero(c['libre']):>7}"
@@ -186,7 +212,10 @@ def mes_a_mes():
     lineas = [f"📅 <b>Mes a mes</b> · salario {euros(p['salario'])}" + ("" if varia else " cada cobro"),
               f"<pre>{chr(10).join(filas_tabla)}</pre>",
               "<i>Pagos = fijos, suscripciones, cuotas y pagos únicos · Acum. = dinero libre acumulado"
-              + (" · Entra = salario + lo que te devuelven" if varia else "") + " · ! no llega · · justo</i>", "",
+              + (" · Entra = salario + lo que te devuelven" if varia else "") + " · ! no llega · · justo"
+              + (" · + más que tu libre porque tus metas ya están completas" if p["reparto"] else "")
+              + (f" · el 1.er cobro incluye {euros_cortos(ciclos[0]['hueco'])} para los pagos de antes del cobro"
+                 if ciclos[0]["hueco"] else "") + "</i>", "",
               f"🧾 Pagarás en total {euros(pagos)} · 🎯 apartarás {euros(a_metas)}",
               f"💸 Te quedarán libres {euros(sum(c['libre'] for c in ciclos))} → acabas con <b>{euros(p['final'])}</b>"]
     rojos = p["rojos"]
@@ -523,7 +552,7 @@ def pantalla_reparto():
     texto = ("🔀 <b>Reparto automático</b>\n"
              f"Ahora: <b>{'activado' if activo else 'apagado'}</b>.\n\n"
              f"Con el reparto, en cada cobro: lo que entra − todos tus pagos − <b>tu libre ({euros(minimo)})</b> = lo que "
-             "sobra, y <b>todo lo que sobra va a tus metas</b>. Si llegabas al cobro en negativo, primero se tapa eso.\n\n"
+             "sobra, y <b>todo lo que sobra va a tus metas</b>. Si te faltaba dinero para los pagos de antes del cobro, primero se cubre eso.\n\n"
              "<b>¿Cómo se reparte entre tus metas?</b>\n"
              + "\n".join(f"{'✅' if activo and reparto.modo() == clave else '▫️'} {nombre}" for clave, nombre in reparto.MODOS.items())
              + "\n\n<i>Lo que te deben entra al reparto solo cuando confirmas que te han pagado. Las prioridades (🥇) "

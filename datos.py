@@ -88,6 +88,9 @@ def migrar(con):
         con.execute("ALTER TABLE deudas ADD COLUMN si_no_paga TEXT NOT NULL DEFAULT 'preguntar'")
     con.execute("CREATE TABLE IF NOT EXISTS saltos (deuda_id INTEGER NOT NULL, periodo TEXT NOT NULL, "
                 "decision TEXT NOT NULL, fecha TEXT NOT NULL, PRIMARY KEY (deuda_id, periodo))")
+    # v12: cuotas con día fijo que se pagan con el próximo cobro (vencen el día del primer salario desde «desde»)
+    con.execute("CREATE TABLE IF NOT EXISTS al_cobro (deuda_id INTEGER NOT NULL, periodo TEXT NOT NULL, "
+                "desde TEXT NOT NULL, PRIMARY KEY (deuda_id, periodo))")
     # v8: metas con aportación (la necesaria o una fija), cuándo recordar y metas especiales (colchón)
     columnas_metas = {fila["name"] for fila in con.execute("PRAGMA table_info(metas)")}
     for columna, definicion in (("aporte_modo", "TEXT NOT NULL DEFAULT 'necesaria'"),

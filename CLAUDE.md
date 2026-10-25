@@ -5,7 +5,7 @@ Bot de Telegram de finanzas personales para Windows. El usuario NO programa: ins
 último `INSTALAR.bat` de la rama `claude/sweet-thompson-41bsdc` y lo ejecuta con `--actualizar`.
 Toda actualización debe funcionar con ese doble clic, sin que el usuario toque nada.
 
-## Funcionalidad (v5 → v11)
+## Funcionalidad (v5 → v12)
 
 - El banco se consulta UNA vez al día (`actualizacion.py`, hora `HORA_SALDO_DIARIO`, 00:00 por
   defecto) o con «🔄 Actualizar ahora» (Ajustes, con confirmación). Descarga saldos y movimientos
@@ -89,6 +89,16 @@ Toda actualización debe funcionar con ese doble clic, sin que el usuario toque 
   pagaron (`bot.repartir_lo_que_te_pagan`). Con el reparto activo no hay tramos ni simulador por meta; propuestas:
   priorizar (orden) y poner a cada meta la fecha en que llega. Se activa al actualizar a la v11 si la clave no
   está en el .env. Si todas las metas se completan, el sobrante queda libre (hito «todas», botón crear meta).
+- v12 · Saldo neto = saldo − lo que hay que pagar ANTES del próximo cobro (ciclo, no mes natural); lo que va con el
+  cobro se muestra aparte («Con tu cobro», `deudas.comprometido_proximo_cobro`). «💶 La pago con el cobro»
+  (`deudas.al_cobro`, botón `dcb:ID:PER`): una cuota con día fijo pasa al próximo cobro (tabla `al_cobro`: vence el
+  día del primer salario desde `desde`) y TODO el plan se mueve (la cuota siguiente, si cae en ese ciclo, se salta
+  con `saltos.decision = 'movida'`, que no cuenta como cuota sin pagar: `deudas.saltos(id, con_movidas=True)`); con
+  modo cobro = saltar «pasar». Al apuntar una cuota con día fijo que cae antes del cobro se pregunta siempre
+  (`dvc:este|cobro|sig`); «al cobrar» apuntada tras cobrar: «¿Con qué cobro?» (`dpc`). `deudas.cambiar_modo`
+  (botón `dmo:`) cambia día fijo ↔ «en cuanto cobro». Aviso único al actualizar (`v12_deudas_al_cobrar`, `dpx:`)
+  para «al cobrar» enlazadas a un cobro ya cobrado antes de apuntarlas. Cuotas con el cobro: sin aviso previo, van
+  en «¡Cobrado!». Proyección: «Tu libre» aparte y lo que sobra con metas completas en otra línea.
 - El banco solo se consulta en: actualización diaria, su recuperación si el PC estaba apagado,
   «Actualizar ahora» y tras renovar el permiso (si ese día no había datos). El usuario pidió dejarlo así.
 

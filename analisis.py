@@ -83,6 +83,21 @@ def texto_saldo():
     return "\n".join(lineas)
 
 
+def detalle_pendiente(i):
+    """«cuota 1/2 · 26 oct» de un pago pendiente del ciclo."""
+    deuda = i["deuda"]
+    if deuda["tipo"] == "plazos":
+        numero, total_cuotas = deudas.numero_cuota(deuda)
+        detalle = f"cuota {numero}/{total_cuotas}" + (f", {i['juntas']} juntas" if i.get("juntas", 1) > 1 else "")
+    else:
+        detalle = deudas.TIPOS[deuda["tipo"]].split(" ", 1)[1].lower()
+    if len(i["periodo"]) == 10 and i["atrasada"]:  # «al cobrar»: es del salario de ese día
+        return f"{detalle} · del cobro del {fecha_corta(date.fromisoformat(i['periodo']))}, sin marcar ⚠️"
+    if i["atrasada"]:
+        return f"{detalle} · {fecha_corta(i['vence'])} ⚠️ sin marcar"
+    return f"{detalle} · {fecha_corta(i['vence'])}"
+
+
 def texto_neto():
     s = saldo_actual()
     if not s:
@@ -92,23 +107,28 @@ def texto_neto():
     lineas = [f"🧮 <b>Saldo neto</b> (ciclo {fecha_corta(inicio)} – {fecha_corta(proximo - timedelta(days=1))})", "",
               f"Saldo total ({texto_actualizado().lower()})", f"   {euros(s['total'])}"]
     if items:
-        lineas.append(f"− Pendiente de pagar este ciclo: {euros(sum(i['importe'] for i in items))}")
+        lineas.append(f"− Antes de tu cobro: {euros(sum(i['importe'] for i in items))}")
         for i in items:
-            deuda = i["deuda"]
-            if deuda["tipo"] == "plazos":
-                numero, total_cuotas = deudas.numero_cuota(deuda)
-                detalle = f"cuota {numero}/{total_cuotas}" + (f", {i['juntas']} juntas" if i.get("juntas", 1) > 1 else "")
-            else:
-                detalle = deudas.TIPOS[deuda["tipo"]].split(" ", 1)[1].lower()
-            aviso = " ⚠️ atrasado" if i["atrasada"] else f" · {fecha_corta(i['vence'])}"
-            lineas.append(f"   • {e(deuda['nombre'])} ({detalle}{aviso}): {euros(i['importe'])}")
+            lineas.append(f"   • {e(i['deuda']['nombre'])} ({detalle_pendiente(i)}): {euros(i['importe'])}")
     else:
-        lineas.append("− Nada pendiente de pagar este ciclo ✅")
+        lineas.append("− Nada que pagar antes de tu cobro ✅")
     lineas.append(f"= <b>Saldo neto: {euros(neto)}</b>")
+    cobrar = deudas.por_cobrar()
+    if cobrar:
+        total = sum(i["importe"] for i in cobrar)
+        lineas.append(f"🤝 Si te pagan los {euros(total)} de este ciclo: {euros(neto + total)} (no se suma hasta que pase)")
     comprometido = deudas.comprometido_proximo_cobro()
     if comprometido:
-        lineas.append(f"\n⏭️ Comprometido del próximo cobro: {euros(sum(i for _, i in comprometido))} "
-                      f"({', '.join(e(d['nombre']) for d, _ in comprometido)})")
+        lineas.append(f"\n💶 <b>Con tu cobro (~{fecha_corta(proximo)})</b>, no se resta aún: "
+                      f"{euros(sum(i for _, i in comprometido))}")
+        for d, importe in comprometido:
+            detalle = ""
+            if d["tipo"] == "plazos":
+                numero, total_cuotas = deudas.numero_cuota(d)
+                numero += len([i for i in items if i["deuda"]["id"] == d["id"]])  # después de las de este ciclo
+                detalle = f" (cuota {numero}/{total_cuotas})"
+            lineas.append(f"   • {e(d['nombre'])}{detalle}: {euros(importe)}")
+        lineas.append("")
     import colchon
     en_metas = colchon.dinero_en_metas()
     if en_metas:
@@ -116,17 +136,12 @@ def texto_neto():
     reservar = sum(metas.pendiente_ciclo(m) for m in metas.activas())
     if reservar:
         lineas.append(f"🎯 Te falta apartar este ciclo para tus metas: {euros(reservar)}")
-    cobrar = deudas.por_cobrar()
-    if cobrar:
-        total = sum(i["importe"] for i in cobrar)
-        lineas.append(f"🤝 Este ciclo te tienen que pagar {euros(total)} (no se suma): "
-                      f"si te pagan, tu neto sería {euros(neto + total)}")
     otros = sum(deudas.restante(d)[0] for d in deudas.activas("me_deben")) - sum(i["importe"] for i in cobrar)
     if otros > 0.004:
         lineas.append(f"🤝 Más adelante te deben otros {euros(otros)}")
     diario, dias = puedes_gastar(neto)
     lineas.append(f"\n💡 Puedes gastar ~<b>{euros_cortos(diario)}/día</b> durante {dias} días")
-    return "\n".join(lineas)
+    return "\n".join(lineas).replace("\n\n\n", "\n\n")
 
 
 # ---------- Análisis del ciclo ----------
@@ -367,7 +382,7 @@ def texto_movimientos(cantidad=10):
 def cuando_se_paga(deuda):
     if deuda["tipo"] in ("fijo", "suscripcion", "plazos"):
         m = deudas.modo(deuda)
-        return {"dia": f"día {deuda['dia']}", "cobro": "al cobrar", "sin": "sin día fijo"}.get(m, "")
+        return {"dia": f"📅 día {deuda['dia']}", "cobro": "💶 al cobrar", "sin": "sin día fijo"}.get(m, "")
     if deuda["tipo"] == "cobro":
         return "pago único al cobrar"
     if deuda["tipo"] == "sin_fecha":
@@ -413,6 +428,18 @@ def texto_deudas():
     return "\n".join(lineas)
 
 
+def texto_en_neto(deuda):
+    """Una línea: si la deuda resta ahora de tu saldo neto (lo que tienes que pagar antes del próximo cobro)."""
+    items = [i for i in deudas.pendientes() if i["deuda"]["id"] == deuda["id"]]
+    if items:
+        total = sum(i["importe"] for i in items)
+        return (f"🧮 En tu saldo neto ahora: <b>sí, {euros(total)}</b> (antes de tu cobro"
+                f"{', sin marcar ⚠️' if any(i['atrasada'] for i in items) else ''})")
+    if any(d["id"] == deuda["id"] for d, _ in deudas.comprometido_proximo_cobro()):
+        return f"🧮 En tu saldo neto ahora: <b>no</b> · va con tu próximo cobro (~{fecha_corta(ciclo.proximo_cobro())})"
+    return "🧮 En tu saldo neto ahora: <b>no</b> · no toca pagar nada antes de tu próximo cobro"
+
+
 def texto_deuda(deuda):
     te_deben = deudas.me_deben(deuda)
     lineas = [f"{deudas.TIPOS[deuda['tipo']].split(' ')[0]} <b>{e(deuda['nombre'])}</b> · "
@@ -438,8 +465,15 @@ def texto_deuda(deuda):
         lineas.append(f"Importe: <b>{euros(deuda['importe'])}</b> · {cuando_se_paga(deuda)}")
     proximo = deudas.proximo_pago(deuda)
     if proximo and deuda["tipo"] in deudas.MENSUALES:
-        cuando = "en tu próximo cobro" if proximo[1] is None else fecha_corta(proximo[0])
+        if proximo[1] is None:
+            cuando = "en tu próximo cobro"
+        elif deudas.al_cobro_desde(deuda["id"], proximo[1]):
+            cuando = f"con tu cobro (~{fecha_corta(proximo[0])})"
+        else:
+            cuando = fecha_corta(proximo[0])
         lineas.append(f"Próximo pago: {cuando} ({euros(proximo[2])})")
+    if not te_deben and deuda["tipo"] != "sin_fecha":
+        lineas.append(texto_en_neto(deuda))
     if proximo or deuda["tipo"] in ("fecha", "plazos"):
         (h1, m1), (h2, m2) = config.franja_deudas()
         lineas.append(f"🔔 Recordatorios entre las {h1:02d}:{m1:02d} y las {h2:02d}:{m2:02d} hasta que lo confirmes")
@@ -581,7 +615,8 @@ def texto_al_cobrar(importe=None):
     bloque("🏠 Gastos fijos y suscripciones", p["fijos"])
     bloque("💳 Cuotas y deudas", p["cuotas"])
     if r and r["hueco"]:
-        lineas.append(f"🕳️ Tapas lo que faltaba antes del cobro: <b>{euros(r['hueco'])}</b> (se queda en tu cuenta)")
+        lineas.append(f"🧾 Primero, lo que te faltaba para los pagos de antes de este cobro: <b>{euros(r['hueco'])}</b> "
+                      "(se queda en tu cuenta)")
     if p["aportes"]:
         titulo = "🎯 A tus metas (todo lo que sobra)" if r else "🎯 Mover a tus metas"
         lineas.append(f"{titulo}: <b>−{euros(sum(x for _, x in p['aportes']))}</b>")

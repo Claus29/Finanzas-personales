@@ -44,20 +44,19 @@ from formato import (DIAS_SEMANA, euros, euros_cortos, leer_entero, leer_fecha, 
 from movimientos import CATEGORIAS
 
 # Súbelo y cambia NOVEDADES en cada actualización con cambios visibles: el bot las anuncia una vez.
-VERSION = 11
-NOVEDADES = ("✨ <b>Bot actualizado: versión 11</b>\n\n"
-             "• 🔀 <b>Reparto automático (activado)</b>: en cada cobro, lo que entra − todos tus pagos − <b>tu libre</b> "
-             "(el que elijas en 📈 Proyección › 💸) = lo que sobra, y <b>todo lo que sobra va a tus metas</b>. Tu libre "
-             "es tuyo, ni más ni menos; las metas reciben más los meses con menos pagos.\n"
-             "• Dos formas de repartir entre tus metas (las cambias cuando quieras en 📈 Proyección › 🔀):\n"
-             "   🧮 <b>Necesario + prioridad</b>: lo justo para que cada meta llegue a su fecha y el resto a la 1.ª "
-             "prioritaria.\n"
-             "   🥇 <b>En cascada</b>: todo a la 1.ª prioritaria hasta completarla, luego a la siguiente.\n"
-             "• Al cobrar, el plan te dice exactamente cuánto mover a cada meta (y a qué cuenta). Si llegabas al cobro "
-             "en negativo, primero se tapa eso.\n"
-             "• 🤝 Cuando confirmas que te han pagado algo que te debían, te digo a qué metas moverlo.\n"
-             "• 🏆 Si completas todas tus metas, lo que sobra queda libre y te aviso por si quieres crear otra.\n"
-             "• 🔧 Arreglado: el veredicto ya avisa si hasta el próximo cobro te falta dinero.")
+VERSION = 12
+NOVEDADES = ("✨ <b>Bot actualizado: versión 12</b>\n\n"
+             "• 🧮 <b>Saldo neto</b>: solo resta lo que tienes que pagar <b>antes de tu próximo cobro</b>. Debajo, aparte, "
+             "lo que va <b>con tu cobro</b> (no se resta aún). Cada pago tiene ✅ (ya pagado) y 💶 (lo pago con el cobro).\n"
+             "• 💶 <b>La pago con el cobro</b>: en cualquier cuota (saldo neto, ficha o recordatorio). Deja de restarse "
+             "ahora, te la recuerdo con el cobro y todo el plan se mueve un mes: nunca dos cuotas en el mismo cobro.\n"
+             "• 📌 <b>Al apuntar una deuda</b> te digo cuándo es la 1.ª cuota y si se resta ya. Si cae antes de tu "
+             "cobro, eliges: este ciclo, en cuanto cobres o el mes que viene.\n"
+             "• 🔁 En cada deuda: <b>Cambiar cuándo se paga</b> (📅 día fijo ↔ 💶 en cuanto cobro) y la línea "
+             "«En tu saldo neto ahora: sí/no».\n"
+             "• 📈 Proyección más clara: los pagos de antes del cobro, <b>tu libre</b> siempre aparte y, si tus metas "
+             "están completas, lo que sobra en otra línea.\n"
+             "• 🔧 Arreglado: una deuda «al cobrar» apuntada después de cobrar ya no se resta ni se cuenta dos veces.")
 VERSION_ANUNCIADA = config.BASE / "version_anunciada.txt"
 
 B_SALDO, B_ANALISIS, B_DEUDAS, B_METAS, B_RECORDATORIOS, B_AJUSTES, B_PROYECCION = (
@@ -158,6 +157,26 @@ async def revisar_metas_tarde(context):
         filas = [[("⚖️ Ver las opciones", f"prq:{otras[0]}" if otras else "pr:aju")],
                  [("💶 Volver a la cuota necesaria", f"gcf:nec:{meta['id']}"), ("Dejar así", "borrar")]]
         await enviar(context, texto, filas)
+
+
+async def revisar_deudas_al_cobrar(context):
+    """Una vez (v12): deudas «al cobrar» apuntadas después de cobrar con la 1.ª cuota en ese cobro ya cobrado.
+    Antes la pregunta al apuntarlas era confusa; se pregunta de nuevo (nada se cambia sin confirmar)."""
+    if datos.enviado("v12_deudas_al_cobrar"):
+        return
+    datos.marcar_enviado("v12_deudas_al_cobrar")
+    for deuda in deudas.activas("debo"):
+        salario = deudas.cuota_de_cobro_ya_cobrado(deuda)
+        if not salario:
+            continue
+        cuando = analisis.fecha_corta(date.fromisoformat(salario["fecha"]))
+        importe = deudas.cuota(deuda) if deuda["tipo"] in deudas.MENSUALES else deuda["importe"]
+        que = "la 1.ª cuota" if deuda["tipo"] in deudas.MENSUALES else "el pago"
+        texto = (f"🔧 <b>Revisa «{e(deuda['nombre'])}»</b>\nLa apuntaste después de cobrar el {cuando} y tengo {que} "
+                 f"({euros(importe)}) en ese cobro, así que se resta ya de tu saldo neto y sale como sin pagar.\n"
+                 f"¿Es así, o {que} va con tu próximo cobro ({analisis.fecha_corta(ciclo.proximo_cobro())})?")
+        await enviar(context, texto, [[("⏭️ Va con el próximo cobro", f"dpx:{deuda['id']}")],
+                                      [(f"💶 Es del cobro del {cuando}", "borrar")]])
 
 
 def con_deshacer(accion_id, filas=None):
@@ -496,7 +515,10 @@ async def atender_boton(update, context, dato):  # noqa: C901  (enrutador de bot
         if partes[1] in pantallas:
             await pantallas[partes[1]](update, context)
         elif partes[1] == "neto":
-            await mostrar(update, context, analisis.texto_neto(), [[("⬅️ Saldo", "m:saldo")]])
+            # Cada pago de antes del cobro: ✅ ya pagado o 💶 con el próximo cobro (nada se da por pagado).
+            filas = [[(f"✅ {i['deuda']['nombre'][:16]}", f"dp:{i['deuda']['id']}:{i['periodo']}"),
+                      ("💶 Con el cobro", f"dcb:{i['deuda']['id']}:{i['periodo']}")] for i in deudas.pendientes()[:8]]
+            await mostrar(update, context, analisis.texto_neto(), filas + [[("⬅️ Saldo", "m:saldo")]])
         elif partes[1] == "movs":
             await mostrar(update, context, analisis.texto_movimientos(12),
                           [[("🏷️ Corregir una categoría", "a:corregir")], [("⬅️ Saldo", "m:saldo")]])
@@ -903,6 +925,8 @@ async def anunciar_novedades(context: ContextTypes.DEFAULT_TYPE):
     VERSION_ANUNCIADA.write_text(str(VERSION))
     if anunciada and anunciada < 10:
         await revisar_metas_tarde(context)
+    if anunciada and anunciada < 12:
+        await revisar_deudas_al_cobrar(context)
     if anunciada < 11 and "REPARTO_AUTO" not in os.environ:
         # v11: el reparto automático se activa al actualizar (decisión del usuario); este ciclo también se reparte.
         config.guardar("REPARTO_AUTO", "1")
