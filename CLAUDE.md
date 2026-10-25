@@ -5,7 +5,7 @@ Bot de Telegram de finanzas personales para Windows. El usuario NO programa: ins
 último `INSTALAR.bat` de la rama `claude/sweet-thompson-41bsdc` y lo ejecuta con `--actualizar`.
 Toda actualización debe funcionar con ese doble clic, sin que el usuario toque nada.
 
-## Funcionalidad (v5 + v6 + v7 + v8)
+## Funcionalidad (v5 → v9)
 
 - El banco se consulta UNA vez al día (`actualizacion.py`, hora `HORA_SALDO_DIARIO`, 00:00 por
   defecto) o con «🔄 Actualizar ahora» (Ajustes, con confirmación). Descarga saldos y movimientos
@@ -17,7 +17,7 @@ Toda actualización debe funcionar con ese doble clic, sin que el usuario toque 
   desde que se registra el salario; «me deben» nunca.
 - Ciclo = del último salario registrado al siguiente (`ciclo.py`); cobro esperado entre
   `DIA_COBRO_DESDE` y `DIA_COBRO_HASTA` (3–7). El recordatorio del cobro insiste hasta registrarlo.
-- Teclado: Saldo, Análisis, Deudas, Metas, Recordatorios, Ajustes (`bot.py`). Pasos guiados con
+- Teclado: Saldo, Proyección / Análisis, Deudas / Metas, Recordatorios / Ajustes (`bot.py`). Pasos guiados con
   `context.user_data["espera"]`; botones con prefijos en `callback_data` (máx. 64 bytes: usar ids
   numéricos, p. ej. `rowid` de movimientos).
 - Datos del usuario en `datos.db` (SQLite, `datos.py`), copia diaria en `copias/`. El esquema solo
@@ -61,6 +61,15 @@ Toda actualización debe funcionar con ese doble clic, sin que el usuario toque 
   Índice de salud 0–100 (`PESOS`: ahorro 25, endeudamiento 20, colchón 20, presupuesto 15, puntualidad 10,
   metas 10), solo con lo que tiene datos (el colchón solo si está activo). Gráficos en `graficos.py`
   (azul #2a78d6 entradas/totales, naranja #eb6834 salidas, verde #1baf7a tercera serie; sin emojis en etiquetas).
+- v9 · Botón «📈 Proyección» en el teclado (fila 1, junto a Saldo; `bot_proyeccion.py`, botones `pr:`, `prp:`,
+  `pra:`, `pri:`, `prs:`; pasos «proy_*»). `proyeccion.simular()` reparte cada cobro futuro hasta `PROYECCION_HASTA`
+  (AAAA-MM; vacío = 12 cobros, máx. 36): salario (`SALARIO_ESTIMADO` > 0 o el último cobrado) + cuotas de lo que te
+  deben (SOLO aquí suman, por petición del usuario) − fijos − suscripciones − cuotas − pagos únicos − metas = libre;
+  parte del dinero libre de hoy. NO se resta gasto del día a día (el usuario lo pidió). Rojo si un cobro no llega o
+  el acumulado baja de 0. Propuestas (recortar / alargar fechas / priorizar / acelerar) que se aplican con
+  confirmación y deshacer, o se ignoran (`proy_ignorar:{firma}`). Avisa tras crear una deuda o meta si deja de ser
+  sostenible, y añade una línea al plan «¡Cobrado!». Gráficos de Proyección en tema oscuro (`graficos_oscuro.py`,
+  superficie #1a1a19, plano #0d0d0d, series #3987e5/#d95926/#199e70/#c98500 validadas); el resto sigue en claro.
 - El banco solo se consulta en: actualización diaria, su recuperación si el PC estaba apagado,
   «Actualizar ahora» y tras renovar el permiso (si ese día no había datos). El usuario pidió dejarlo así.
 
@@ -80,7 +89,8 @@ Toda actualización debe funcionar con ese doble clic, sin que el usuario toque 
   `EB_KEY_PATH`, `EB_SESSION_ID`, `EB_COUNTRY`, `EB_REDIRECT_URL`, `ZONA_HORARIA`,
   `LIMITE_CONSULTAS_DIA`, `HORA_SALDO_DIARIO`, `SALDO_DIARIO_ACTIVO`, `DIA_COBRO_DESDE`, `DIA_COBRO_HASTA`,
   `PRESUPUESTO_CICLO`, `UMBRAL_SALDO_BAJO`, `HORA_AVISO_PAGO`, `FRANJA_DEUDAS_DESDE`, `FRANJA_DEUDAS_HASTA`,
-  `DIAS_AVISO_SIN_DIA`, `COLCHON_ACTIVO`, `COLCHON_MESES`, `AVISO_*`).
+  `DIAS_AVISO_SIN_DIA`, `COLCHON_ACTIVO`, `COLCHON_MESES`, `SALARIO_ESTIMADO`, `PROYECCION_HASTA`,
+  `AVISO_*`).
   Una clave nueva debe tener valor por defecto (`config.POR_DEFECTO`) o pedirse solo si falta.
 - La actualización copia los archivos del repositorio encima de `%LOCALAPPDATA%\FinanzasBot` con
   robocopy y borra una lista fija de archivos obsoletos (en `INSTALAR.bat`). Los archivos que genera

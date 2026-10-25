@@ -160,6 +160,7 @@ async def crear(update, context, d):
     logging.info("Meta creada: %s", d["nombre"])
     await b.enviar(context, "✅ Meta creada:\n\n" + analisis.texto_meta(metas.obtener(meta_id)),
                    b.con_deshacer(accion, [[("🎯 Ver metas", "m:metas")]]))
+    await b.avisar_proyeccion(context)
 
 
 async def responder(update, context, espera, escrito):

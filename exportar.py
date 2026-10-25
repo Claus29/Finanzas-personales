@@ -30,6 +30,28 @@ HOJAS = [
 ]
 
 
+def hoja_proyeccion(libro):
+    """Hoja con la proyección cobro a cobro (se calcula al exportar)."""
+    import proyeccion
+    p = proyeccion.simular()
+    if not p:
+        return
+    hoja = libro.create_sheet("Proyeccion")
+    columnas = ["Cobro", "Salario", "Te devuelven", "Gastos fijos", "Suscripciones", "Cuotas", "Pagos unicos",
+                "Metas", "Libre", "Acumulado", "Estado"]
+    hoja.append(columnas)
+    for celda in hoja[1]:
+        celda.font = Font(bold=True)
+    estados = {"🟢": "Sostenible", "🟡": "Justo", "🔴": "No llega"}
+    hoja.append(["Hoy (hasta el cobro)", None, p["deben_hoy"], None, None, None, None, None, p["libre_hoy"], p["puente"], ""])
+    for c in p["ciclos"]:
+        t = c["totales"]
+        hoja.append([c["fecha"].isoformat(), c["salario"], t["deben"], t["fijos"], t["subs"], t["cuotas"], t["unicos"],
+                     t["metas"], c["libre"], c["acumulado"], estados[c["estado"]]])
+    for n, columna in enumerate(columnas, 1):
+        hoja.column_dimensions[get_column_letter(n)].width = max(12, len(columna) + 4)
+
+
 def excel():
     """(archivo en memoria, nombre)"""
     nombres = {c["uid"]: consultas.nombre_cuenta(c) for c in consultas.cuentas()}
@@ -51,6 +73,7 @@ def excel():
             hoja.append(fila)
         for n, columna in enumerate(columnas, 1):
             hoja.column_dimensions[get_column_letter(n)].width = max(12, len(columna) + 4)
+    hoja_proyeccion(libro)
     salida = io.BytesIO()
     libro.save(salida)
     salida.seek(0)

@@ -25,6 +25,7 @@ import autenticacion
 import avisos
 import bot_deudas
 import bot_metas
+import bot_proyeccion
 import ciclo
 import colchon
 import config
@@ -41,29 +42,29 @@ from formato import (DIAS_SEMANA, euros, euros_cortos, leer_entero, leer_fecha, 
 from movimientos import CATEGORIAS
 
 # Súbelo y cambia NOVEDADES en cada actualización con cambios visibles: el bot las anuncia una vez.
-VERSION = 8
-NOVEDADES = ("✨ <b>Bot actualizado: versión 8</b>\n\n"
-             "• 🧭 <b>Análisis completo</b> (📊 Análisis): ahora, por meses (ciclos de cobro), anual, flujo de caja, metas, "
-             "salud financiera y trayectoria. Cada pantalla con su gráfico y explicado: balance, tasa de ahorro, ratio de "
-             "endeudamiento, patrimonio neto, gastos hormiga, suscripciones al año y mucho más.\n"
-             "• 🩺 <b>Índice de salud financiera</b>: una nota de 0 a 100 de cómo van tus finanzas y qué la subiría.\n"
-             "• 🎯 <b>Metas en sus propias cuentas</b>: vincula cada meta a un Espacio de N26. En cada cobro te digo cuánto "
-             "mover y a qué cuenta (la cantidad necesaria o una fija) y te lo recuerdo cada día hasta que me digas "
-             "«✅ Ya lo moví». También «otra cantidad» o «este mes no».\n"
-             "• 💶 <b>Al cobrar, el plan completo</b>: gastos fijos, cuotas, lo que mover a cada meta y lo que te queda "
-             "para gastar al día. Nada se da por hecho.\n"
-             "• 🔍 Si veo que una cuenta de meta sube, te pregunto si es tu aportación; si llega al objetivo, te pregunto "
-             "si la doy por conseguida.\n"
-             "• 🛟 <b>Colchón de emergencia</b> listo en ⚙️ Ajustes (de momento desactivado).\n\n"
-             "<i>Recuerda: el bot nunca mueve dinero, solo calcula, recuerda y comprueba.</i>")
+VERSION = 9
+NOVEDADES = ("✨ <b>Bot actualizado: versión 9</b>\n\n"
+             "• 📈 <b>Nuevo botón «Proyección»</b> (junto a Saldo): cómo se reparte tu salario en cada cobro hasta el mes "
+             "que elijas. Gastos fijos, suscripciones, cuotas, pagos únicos, metas y lo que te devuelven. "
+             "<b>Cuánto te queda libre en cada cobro</b> y con cuánto dinero acabas.\n"
+             "• 🟢🟡🔴 Te dice si tu configuración es <b>sostenible</b>, cuál es el cobro más justo y cuánto podrías "
+             "destinar como máximo a tus metas.\n"
+             "• 📅 Mes a mes, 🗓️ calendario (cuándo terminas cada deuda y consigues cada meta), 🎯 metas y "
+             "🧪 «¿y si…?» (cobrar más o menos, sin lo que te deben, sin metas).\n"
+             "• ⚖️ <b>Ajustar</b>: propuestas para que sea sostenible (recortar, alargar fechas, priorizar) o para "
+             "acelerar tus metas. Las aplicas con un toque (y se pueden deshacer) o las ignoras. Y un simulador para "
+             "probar cambios en cada meta.\n"
+             "• 💶 Usa tu último salario o uno estimado que escribas tú.\n"
+             "• 🖤 Gráficos nuevos en negro, más detallados.")
 VERSION_ANUNCIADA = config.BASE / "version_anunciada.txt"
 
-B_SALDO, B_ANALISIS, B_DEUDAS, B_METAS, B_RECORDATORIOS, B_AJUSTES = (
-    "💰 Saldo", "📊 Análisis", "💳 Deudas", "🎯 Metas", "⏰ Recordatorios", "⚙️ Ajustes")
+B_SALDO, B_ANALISIS, B_DEUDAS, B_METAS, B_RECORDATORIOS, B_AJUSTES, B_PROYECCION = (
+    "💰 Saldo", "📊 Análisis", "💳 Deudas", "🎯 Metas", "⏰ Recordatorios", "⚙️ Ajustes", "📈 Proyección")
 BOTONES_VIEJOS = {"💰 Ver saldo": B_SALDO}  # teclados de versiones anteriores que aún tenga el móvil
-TECLADO = ReplyKeyboardMarkup([[KeyboardButton(B_SALDO), KeyboardButton(B_ANALISIS)],
-                               [KeyboardButton(B_DEUDAS), KeyboardButton(B_METAS)],
-                               [KeyboardButton(B_RECORDATORIOS), KeyboardButton(B_AJUSTES)]],
+TECLADO = ReplyKeyboardMarkup([[KeyboardButton(B_SALDO), KeyboardButton(B_PROYECCION)],
+                               [KeyboardButton(B_ANALISIS), KeyboardButton(B_DEUDAS)],
+                               [KeyboardButton(B_METAS), KeyboardButton(B_RECORDATORIOS)],
+                               [KeyboardButton(B_AJUSTES)]],
                               resize_keyboard=True, is_persistent=True)
 AVISOS_CONFIGURABLES = [
     ("AVISO_DEUDAS", "💳 Lo que debes (deudas, cuotas, fijos, suscripciones)"),
@@ -117,6 +118,18 @@ async def enviar(context, texto, filas=None):
 
 def esperar(context, paso, **datos_paso):
     context.user_data["espera"] = {"paso": paso, **datos_paso}
+
+
+async def avisar_proyeccion(context):
+    """Tras apuntar una deuda o una meta: si algún cobro futuro deja de llegar, lo avisa."""
+    import proyeccion
+    try:
+        aviso = await asyncio.to_thread(proyeccion.aviso_si_insostenible)
+    except Exception:
+        detalle.exception("No se pudo calcular la proyección")
+        return
+    if aviso:
+        await enviar(context, aviso, [[("📈 Ver proyección", "pr:res"), ("⚖️ Ajustar", "pr:aju")]])
 
 
 def con_deshacer(accion_id, filas=None):
@@ -216,7 +229,8 @@ async def pantalla_ajustes(update, context, nuevo=False):
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE, boton):
     context.user_data.pop("espera", None)
     pantallas = {B_SALDO: pantalla_saldo, B_ANALISIS: pantalla_analisis, B_DEUDAS: pantalla_deudas,
-                 B_METAS: pantalla_metas, B_RECORDATORIOS: pantalla_recordatorios, B_AJUSTES: pantalla_ajustes}
+                 B_METAS: pantalla_metas, B_RECORDATORIOS: pantalla_recordatorios, B_AJUSTES: pantalla_ajustes,
+                 B_PROYECCION: bot_proyeccion.pantalla}
     await pantallas[boton](update, context, nuevo=True)
 
 
@@ -235,7 +249,7 @@ async def inicio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def texto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     escrito = update.message.text.strip()
     boton = BOTONES_VIEJOS.get(escrito, escrito)
-    if boton in (B_SALDO, B_ANALISIS, B_DEUDAS, B_METAS, B_RECORDATORIOS, B_AJUSTES):
+    if boton in (B_SALDO, B_ANALISIS, B_DEUDAS, B_METAS, B_RECORDATORIOS, B_AJUSTES, B_PROYECCION):
         await menu(update, context, boton)
         return
     espera = context.user_data.get("espera")
@@ -269,6 +283,10 @@ async def responder_pregunta(update, context, espera, escrito):
 
     # --- Deudas
     if paso.startswith("deuda_") and await bot_deudas.responder(update, context, espera, escrito):
+        return None
+
+    # --- Proyección
+    if paso.startswith("proy_") and await bot_proyeccion.responder(update, context, espera, escrito):
         return None
 
     # --- Metas y colchón
@@ -519,6 +537,10 @@ async def atender_boton(update, context, dato):  # noqa: C901  (enrutador de bot
     # --- Deudas
     if clave in bot_deudas.PREFIJOS:
         return await bot_deudas.boton(update, context, partes)
+
+    # --- Proyección
+    if clave in bot_proyeccion.PREFIJOS:
+        return await bot_proyeccion.boton(update, context, partes)
 
     # --- Metas y colchón
     if clave in bot_metas.PREFIJOS:

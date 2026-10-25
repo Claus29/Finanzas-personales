@@ -4,6 +4,7 @@ Todo se calcula al momento con lo guardado en la última actualización: nunca s
 Los mensajes son HTML de Telegram y cortos (unas 10 líneas), con barras y semáforos.
 """
 import html
+import logging
 from datetime import date, timedelta
 
 import ciclo
@@ -586,6 +587,13 @@ def texto_al_cobrar(importe=None):
                    "   • Pagar una cuota de otra cantidad (💸 Otra cantidad)."]
     if p["cobrar"]:
         lineas.append(f"\n🤝 Además te tienen que pagar {euros(sum(i['importe'] for i in p['cobrar']))} (no se cuenta).")
+    try:
+        import proyeccion
+        resumen = proyeccion.resumen_corto()
+        if resumen:
+            lineas.append(f"\n{resumen}")
+    except Exception:  # la proyección es un extra: nunca impide enviar el plan
+        logging.getLogger("detalle").exception("No se pudo calcular la proyección del plan")
     (h1, m1), (h2, m2) = config.franja_deudas()
     lineas.append(f"\n<i>Nada se da por hecho: marca lo que ya hayas pagado y movido. Lo demás te lo recuerdo "
                   f"cada día entre las {h1:02d}:{m1:02d} y las {h2:02d}:{m2:02d} hasta que lo confirmes.</i>")

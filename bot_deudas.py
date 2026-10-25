@@ -206,6 +206,7 @@ async def crear(update, context, d):
         nota = f"\n🔔 Te lo recordaré entre las {h1:02d}:{m1:02d} y las {h2:02d}:{m2:02d} hasta que lo confirmes."
     await b.enviar(context, f"✅ Apuntado:\n{analisis.linea_deuda(deuda)}{nota}",
                    b.con_deshacer(accion, [[("💳 Ver deudas", "m:deudas")]]))
+    await b.avisar_proyeccion(context)
 
 
 async def responder(update, context, espera, escrito):
