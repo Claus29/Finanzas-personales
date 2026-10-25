@@ -42,20 +42,18 @@ from formato import (DIAS_SEMANA, euros, euros_cortos, leer_entero, leer_fecha, 
 from movimientos import CATEGORIAS
 
 # Súbelo y cambia NOVEDADES en cada actualización con cambios visibles: el bot las anuncia una vez.
-VERSION = 9
-NOVEDADES = ("✨ <b>Bot actualizado: versión 9</b>\n\n"
-             "• 📈 <b>Nuevo botón «Proyección»</b> (junto a Saldo): cómo se reparte tu salario en cada cobro hasta el mes "
-             "que elijas. Gastos fijos, suscripciones, cuotas, pagos únicos, metas y lo que te devuelven. "
-             "<b>Cuánto te queda libre en cada cobro</b> y con cuánto dinero acabas.\n"
-             "• 🟢🟡🔴 Te dice si tu configuración es <b>sostenible</b>, cuál es el cobro más justo y cuánto podrías "
-             "destinar como máximo a tus metas.\n"
-             "• 📅 Mes a mes, 🗓️ calendario (cuándo terminas cada deuda y consigues cada meta), 🎯 metas y "
-             "🧪 «¿y si…?» (cobrar más o menos, sin lo que te deben, sin metas).\n"
-             "• ⚖️ <b>Ajustar</b>: propuestas para que sea sostenible (recortar, alargar fechas, priorizar) o para "
-             "acelerar tus metas. Las aplicas con un toque (y se pueden deshacer) o las ignoras. Y un simulador para "
-             "probar cambios en cada meta.\n"
-             "• 💶 Usa tu último salario o uno estimado que escribas tú.\n"
-             "• 🖤 Gráficos nuevos en negro, más detallados.")
+VERSION = 10
+NOVEDADES = ("✨ <b>Bot actualizado: versión 10</b>\n\n"
+             "• 🥇 <b>Priorizar metas, bien hecho</b>: cuando el dinero no llega, eliges qué meta va primero (o varias en "
+             "orden). Las demás aportan menos (o nada) <b>solo mientras tanto</b>; cuando consigues la prioritaria:\n"
+             "   🔁 <b>Recuperar</b>: suben lo necesario para llegar a su fecha, o\n"
+             "   📅 <b>Aplazar</b>: vuelven a su cuota normal y llegan más tarde.\n"
+             "   Ves las dos opciones con sus números y gráficos, el bot recomienda una ⭐ y tú eliges (o lo ignoras).\n"
+             "• 💸 <b>Libre mínimo por cobro</b> (📈 Proyección): dices cuánto dinero quieres que te quede libre en cada "
+             "cobro (o 0 € para destinar todo el salario a pagos y metas) y las propuestas se ajustan a eso.\n"
+             "• ✂️ <b>Recortar</b> ahora es temporal: aportar menos o nada hasta que vuelva a caber, y después se aplaza.\n"
+             "• Los recordatorios piden la cuota de cada momento y la ficha de cada meta te dice si está en espera.\n"
+             "• 🔧 Arreglado: antes, al priorizar, el recorte se quedaba para siempre.")
 VERSION_ANUNCIADA = config.BASE / "version_anunciada.txt"
 
 B_SALDO, B_ANALISIS, B_DEUDAS, B_METAS, B_RECORDATORIOS, B_AJUSTES, B_PROYECCION = (
@@ -129,7 +127,33 @@ async def avisar_proyeccion(context):
         detalle.exception("No se pudo calcular la proyección")
         return
     if aviso:
-        await enviar(context, aviso, [[("📈 Ver proyección", "pr:res"), ("⚖️ Ajustar", "pr:aju")]])
+        p = await asyncio.to_thread(proyeccion.simular)
+        await enviar(context, aviso, bot_proyeccion.botones_prioridad(p)
+                     + [[("📈 Ver proyección", "pr:res"), ("⚖️ Ajustar", "pr:aju")]])
+
+
+async def revisar_metas_tarde(context):
+    """Una vez (v10): metas con una cuota fija antigua que ya no llega a su fecha (p. ej. tras un recorte de la v9)."""
+    import proyeccion
+    if datos.enviado("v10_metas_tarde"):
+        return
+    datos.marcar_enviado("v10_metas_tarde")
+    try:
+        tarde = await asyncio.to_thread(proyeccion.metas_tarde)
+        prioritarias = await asyncio.to_thread(proyeccion.prioritarias_actuales)
+    except Exception:
+        detalle.exception("No se pudieron revisar las metas")
+        return
+    for meta, fin in tarde:
+        otras = [i for i in prioritarias if i != meta["id"]]
+        llega = f"llegaría en {proyeccion.mes_largo(fin)}" if fin else "no llegaría nunca"
+        texto = (f"🔧 <b>Revisa «{e(meta['nombre'])}»</b>\nAporta {euros(meta['aporte_fijo'])} fijos por cobro y así "
+                 f"{llega} (tu fecha: {proyeccion.mes_largo(date.fromisoformat(meta['fecha_limite']))}).\n"
+                 "Antes, al priorizar, el recorte se quedaba para siempre; ahora es temporal: mientras consigues la "
+                 "prioritaria aporta menos y después <b>recupera</b> (sube para llegar a su fecha) o se <b>aplaza</b>.")
+        filas = [[("⚖️ Ver las opciones", f"prq:{otras[0]}" if otras else "pr:aju")],
+                 [("💶 Volver a la cuota necesaria", f"gcf:nec:{meta['id']}"), ("Dejar así", "borrar")]]
+        await enviar(context, texto, filas)
 
 
 def con_deshacer(accion_id, filas=None):
@@ -841,6 +865,8 @@ async def anunciar_novedades(context: ContextTypes.DEFAULT_TYPE):
         return
     await context.bot.send_message(estado["chat_id"], NOVEDADES, parse_mode="HTML", reply_markup=TECLADO)
     VERSION_ANUNCIADA.write_text(str(VERSION))
+    if anunciada and anunciada < 10:
+        await revisar_metas_tarde(context)
 
 
 async def error_no_controlado(update, context: ContextTypes.DEFAULT_TYPE):

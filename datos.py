@@ -93,7 +93,12 @@ def migrar(con):
     for columna, definicion in (("aporte_modo", "TEXT NOT NULL DEFAULT 'necesaria'"),
                                 ("aporte_fijo", "REAL NOT NULL DEFAULT 0"),
                                 ("recordar", "TEXT NOT NULL DEFAULT 'cobro1'"),
-                                ("especial", "TEXT NOT NULL DEFAULT ''")):
+                                ("especial", "TEXT NOT NULL DEFAULT ''"),
+                                # v10: prioridad y tramo temporal (cuota reducida hasta que se cumpla una condición)
+                                ("prioridad", "INTEGER NOT NULL DEFAULT 0"),
+                                ("tramo_aporte", "REAL NOT NULL DEFAULT -1"),
+                                ("tramo_hasta", "TEXT NOT NULL DEFAULT ''"),
+                                ("tramo_despues", "TEXT NOT NULL DEFAULT ''")):
         if columna not in columnas_metas:
             con.execute(f"ALTER TABLE metas ADD COLUMN {columna} {definicion}")
     con.execute("CREATE TABLE IF NOT EXISTS aportes_ciclo (meta_id INTEGER NOT NULL, ciclo TEXT NOT NULL, "

@@ -494,6 +494,14 @@ def texto_meta(meta):
     if p["falta"] > 0 and meta["activa"] == metas.ACTIVA:
         modo = (f"✍️ fija de {euros_cortos(meta['aporte_fijo'])}" if meta["aporte_modo"] == "fija" and meta["aporte_fijo"]
                 else "🧮 la necesaria para llegar a tiempo")
+        if meta["prioridad"]:
+            lineas.append(f"🥇 Prioridad {meta['prioridad']}")
+        if meta["tramo_aporte"] >= 0:
+            tras = ("después sube lo necesario para llegar a su fecha" if meta["tramo_despues"] == "recuperar"
+                    else "después vuelve a su cuota normal (fecha aplazada)")
+            espera = metas.describir_hasta(meta["tramo_hasta"])
+            estado_tramo = "⏸️ Ahora" if metas.en_espera(meta) else "✅ Terminó la espera"
+            lineas.append(f"{estado_tramo}: {euros_cortos(meta['tramo_aporte'])} por cobro {espera}; {tras}")
         lineas += ["", f"💶 Aportación de cada cobro: {modo}",
                    f"⏰ Te lo recuerdo {metas.describir_recordar(meta)}, cada día hasta que lo confirmes"]
         estado = metas.estado_ciclo(meta)

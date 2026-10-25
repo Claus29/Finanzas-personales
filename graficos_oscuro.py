@@ -136,8 +136,8 @@ def _barra(eje, x, y0, ancho, alto, color, radio_px=5, horizontal=False, hueco_p
     eje.add_patch(caja)
 
 
-def _leyenda(eje, elementos, y=1.06):
-    leyenda = eje.legend(handles=elementos, loc="lower left", bbox_to_anchor=(0, y), ncol=len(elementos),
+def _leyenda(eje, elementos, y=1.06, ncol=None):
+    leyenda = eje.legend(handles=elementos, loc="lower left", bbox_to_anchor=(0, y), ncol=ncol or len(elementos),
                          frameon=False, fontsize=8.5, handlelength=0.9, handleheight=0.9, columnspacing=1.6,
                          borderaxespad=0, prop={"family": FUENTE, "size": 8.5})
     for texto in leyenda.get_texts():
@@ -154,8 +154,8 @@ def _rejilla_y(eje, formato=euros):
 def _estado(p):
     if not p["sostenible"]:
         return ROJO, "No sostenible"
-    if any(x["estado"] == "🟡" for x in p["ciclos"]):
-        return AVISO, "Justo"
+    if not p.get("cumple", True):
+        return AVISO, "Menos libre del que quieres"
     return VERDE, "Sostenible"
 
 
@@ -424,15 +424,19 @@ def metas(filas, salario, pie):
 # ---------- 6. Comparación (propuestas y escenarios) ----------
 
 def comparacion(series, pie, titulo, subtitulo):
-    """Lo libre en cada cobro con la configuración actual y con una propuesta. series: [(nombre, proyección)]."""
-    series = series[:2]
-    alto = 5.2
-    base, nueva = series[0][1], series[-1][1]
-    colores = (AZUL, AQUA)
-    figura, ejes = _tarjeta(alto, titulo, subtitulo, euros(nueva["peor"]["libre"]), "libres en el cobro más justo",
+    """Lo libre en cada cobro con la configuración actual y con hasta dos alternativas. series: [(nombre, proyección)].
+    La primera serie (ahora) va en azul continuo; las alternativas, en aqua y naranja discontinuas."""
+    series = series[:3]
+    alto = 5.3
+    base, nueva = series[0][1], series[1][1] if len(series) > 1 else series[0][1]
+    colores = (AZUL, AQUA, NARANJA)
+    estilos = ("-", (0, (6, 2)), (0, (2, 2)))
+    minimo = base.get("minimo", 0) or 0
+    figura, ejes = _tarjeta(alto, titulo, subtitulo, euros(nueva["peor"]["libre"]),
+                            f"libres en el cobro más justo ({series[1][0] if len(series) > 1 else 'ahora'})"[:52],
                             _estado(nueva), pie)
     eje = ejes(abajo_pulgadas=0.85, arriba_pulgadas=1.5, izq=0.12, der=0.1)
-    todos = [c["libre"] for _, p in series for c in p["ciclos"]]
+    todos = [c["libre"] for _, p in series for c in p["ciclos"]] + [minimo]
     abajo, arriba = min(0.0, min(todos)), max(todos)
     margen = (arriba - abajo) * 0.14 or 100
     eje.set_ylim(abajo - (margen if abajo < 0 else 0), arriba + margen)
@@ -441,27 +445,63 @@ def comparacion(series, pie, titulo, subtitulo):
         eje.text(base["ciclos"][0]["fecha"], eje.get_ylim()[0], "  ! no llega", color=ROJO, fontsize=8, va="bottom",
                  family=FUENTE)
     eje.axhline(0, color=EJE, linewidth=1)
-    for (nombre, p), color, estilo in zip(series, colores, ("-", (0, (6, 2)))):
+    if minimo:
+        eje.axhline(minimo, color=TINTA_2, linewidth=1, linestyle=(0, (4, 3)), zorder=2)
+        eje.text(base["ciclos"][-1]["fecha"], minimo, f" mínimo {euros(minimo)}", color=TINTA_2, fontsize=7.5,
+                 va="bottom", ha="right", family=FUENTE)
+    for (nombre, p), color, estilo in zip(series, colores, estilos):
         fechas = [c["fecha"] for c in p["ciclos"]]
         valores = [c["libre"] for c in p["ciclos"]]
         eje.plot(fechas, valores, color=color, linewidth=2.3, linestyle=estilo, solid_capstyle="round", zorder=4)
-        eje.scatter(fechas, valores, s=18, color=color, edgecolors=SUPERFICIE, linewidths=1.2, zorder=5)
+        eje.scatter(fechas, valores, s=16, color=color, edgecolors=SUPERFICIE, linewidths=1.2, zorder=5)
     fin = base["ciclos"][-1]["fecha"]
-    finales = sorted((p["ciclos"][-1]["libre"], color) for (_, p), color in zip(series, colores))
+    finales = sorted({round(p["ciclos"][-1]["libre"]) for _, p in series})  # cifras iguales, una sola vez
     ultima, rango = None, eje.get_ylim()[1] - eje.get_ylim()[0]
-    for valor, color in finales:
+    for valor in finales:
         y = valor if ultima is None or valor - ultima > rango * 0.06 else ultima + rango * 0.06
         eje.text(fin, y, f"  {euros(valor)}", color=TINTA, fontsize=8.5, va="center", ha="left", family=FUENTE,
                  clip_on=False)
         ultima = y
     _rejilla_y(eje)
-    fechas = [c["fecha"] for c in base["ciclos"]]
-    eje.set_xlim(mdates.date2num(fechas[0]) - 8, mdates.date2num(fin) + 4)
+    _eje_cobros(eje, [c["fecha"] for c in base["ciclos"]])
+    _leyenda(eje, [Line2D([0], [0], color=c, linewidth=2.3, linestyle=e, label=n[:34])
+                   for (n, _), c, e in zip(series, colores, estilos)])
+    return _png(figura)
+
+
+def _eje_cobros(eje, fechas):
+    """Eje x con una marca en cada cobro (mes abreviado)."""
+    eje.set_xlim(mdates.date2num(fechas[0]) - 8, mdates.date2num(fechas[-1]) + 4)
     paso = 1 if len(fechas) <= 12 else (2 if len(fechas) <= 24 else 3)
     eje.set_xticks([mdates.date2num(f) for f in fechas[::paso]])
     eje.set_xticklabels([mes(f) for f in fechas[::paso]], color=TINTA_2, fontsize=8)
-    _leyenda(eje, [Line2D([0], [0], color=c, linewidth=2.3, linestyle=e, label=n[:40])
-                   for (n, _), c, e in zip(series, colores, ("-", (0, (6, 2))))])
+
+
+def cuotas(lineas, fechas, pie, titulo, subtitulo):
+    """Cuota de cada meta en cada cobro. lineas: [(nombre, color 0-2, «continua»|«discontinua», [valores])].
+    Los tramos se ven como escalones: baja mientras espera y sube (recuperar) o vuelve (aplazar) después."""
+    lineas = lineas[:4]
+    alto = 5.0
+    figura, ejes = _tarjeta(alto, titulo, subtitulo, None, "", None, pie)
+    eje = ejes(abajo_pulgadas=0.85, arriba_pulgadas=1.5 if len(lineas) <= 2 else 1.75, izq=0.12, der=0.12)
+    maximo = max([v for *_, valores in lineas for v in valores] + [10])
+    eje.set_ylim(0, maximo * 1.18)
+    colores = (AZUL, AQUA, NARANJA)
+    for nombre, color, estilo, valores in lineas:
+        eje.step(fechas, valores, where="post", color=colores[color], linewidth=2.3,
+                 linestyle="-" if estilo == "continua" else (0, (6, 2)), zorder=4)
+        eje.scatter(fechas, valores, s=14, color=colores[color], edgecolors=SUPERFICIE, linewidths=1.1, zorder=5)
+        # Etiqueta en cada cambio de cuota (selectiva: solo donde cambia)
+        anterior = None
+        for f, v in zip(fechas, valores):
+            if v >= 1 and (anterior is None or abs(v - anterior) >= 1):
+                eje.annotate(euros(v), (f, v), xytext=(4, 6 if estilo == "continua" else -12), textcoords="offset points",
+                             color=TINTA if estilo == "continua" else TINTA_2, fontsize=7.6, family=FUENTE)
+            anterior = v
+    _rejilla_y(eje)
+    _eje_cobros(eje, fechas)
+    _leyenda(eje, [Line2D([0], [0], color=colores[c], linewidth=2.3, linestyle="-" if e == "continua" else (0, (6, 2)),
+                          label=n[:30]) for n, c, e, _ in lineas], ncol=2 if len(lineas) > 2 else None)
     return _png(figura)
 
 

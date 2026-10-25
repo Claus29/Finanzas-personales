@@ -66,6 +66,10 @@ def filas_ficha(meta):
         filas.append([("➕ Aportar", f"g:ap:{meta['id']}"), ("➖ Retirar", f"g:re:{meta['id']}")])
     filas.append([("⚙️ Aportación", f"gc:ap:{meta['id']}"), ("⏰ Cuándo", f"gc:rec:{meta['id']}")])
     filas.append([("🔗 Cambiar cuenta" if meta["uid"] else "🔗 Vincular a una cuenta", f"gc:uid:{meta['id']}")])
+    if meta["tramo_aporte"] >= 0 or meta["prioridad"]:
+        filas.append([("✖️ Quitar prioridad/espera", f"gc:tq:{meta['id']}"), ("⚖️ Ver opciones", "pr:aju")])
+    elif meta["activa"] == metas.ACTIVA:
+        filas.append([("🥇 Priorizar esta meta", f"prq:{meta['id']}")])
     if meta["especial"] == "colchon":
         filas.append([("⬅️ Metas", "m:metas")])
     else:
@@ -360,6 +364,10 @@ async def boton(update, context, partes):  # noqa: C901  (enrutador de botones d
         if not meta:
             return "Esa meta ya no existe"
         volver = [("⬅️ Volver", f"g:ver:{meta['id']}")]
+        if partes[1] == "tq":
+            metas.quitar_tramo(meta["id"])
+            await ver(update, context, meta["id"])
+            return "Vuelve a su cuota normal"
         if partes[1] == "ap":
             await b.mostrar(update, context, f"💶 ¿Cuánto apartas en cada cobro para «{e(meta['nombre'])}»?",
                             [[(f"🧮 La necesaria (~{euros_cortos(metas.progreso(meta)['mensual'])}/mes)", f"gcf:nec:{meta['id']}")],

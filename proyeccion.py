@@ -25,8 +25,7 @@ from formato import MESES, MESES_CORTOS, euros, euros_cortos, sumar_meses
 
 COBROS_POR_DEFECTO = 12
 MAX_COBROS = 36
-MINIMO = 5  # aportación mínima que proponen los ajustes (una cantidad fija de 0 € no existe)
-JUSTO = 0.05  # 🟡 si lo libre de un cobro es menos del 5 % del salario
+MINIMO = 5  # aportación fija mínima del simulador (una cantidad fija de 0 € no existe: para eso están los tramos)
 _CACHE = None  # mientras se calculan propuestas, lo que no cambia entre simulaciones se calcula una vez
 CLASES = {"fijos": "🏠 Gastos fijos", "subs": "📺 Suscripciones", "cuotas": "💳 Cuotas", "unicos": "🧾 Pagos únicos",
           "metas": "🎯 Metas", "deben": "🤝 Te devuelven"}
@@ -169,13 +168,17 @@ def calendario_deudas(fechas):
 
 # ---------- Metas, por ciclo ----------
 
+def _sin_pausa(cfg):
+    return {k: v for k, v in (cfg or {}).items() if k != "pausa"}
+
+
 def pendiente_hoy(meta, cfg):
     """Lo que falta apartar en el ciclo actual con los cambios simulados (0 si ya lo confirmaste)."""
     if metas.estado_ciclo(meta) or 0 in cfg.get("pausa", ()):
         return 0.0
-    if not cfg.get("aporte_modo") and not cfg.get("aporte_fijo") and not cfg.get("fecha_limite"):
+    if not _sin_pausa(cfg):
         return metas.pendiente_ciclo(meta)
-    return aporte(meta, metas.ahorrado(meta), ciclo.inicio(), cfg)
+    return metas.cuota(meta, metas.ahorrado(meta), ciclo.inicio(), metas.pendientes_ahora(), _sin_pausa(cfg))
 
 
 def estado_inicial_metas(cambios=None):
@@ -184,18 +187,23 @@ def estado_inicial_metas(cambios=None):
     return {m["id"]: metas.ahorrado(m) + pendiente_hoy(m, cambios.get(m["id"], {})) for m in metas.activas()}
 
 
-def aporte(meta, ahorrado, fecha_cobro, cfg):
-    """Lo que toca apartar en el cobro de fecha_cobro (con los cambios simulados de cfg)."""
-    objetivo = meta["objetivo"]
-    falta = round(objetivo - ahorrado, 2)
-    if falta <= 0.004:
-        return 0.0
-    modo = cfg.get("aporte_modo", meta["aporte_modo"])
-    fijo = cfg.get("aporte_fijo", meta["aporte_fijo"])
-    if modo == "fija" and fijo > 0:
-        return round(min(fijo, falta), 2)
-    limite = date.fromisoformat(cfg.get("fecha_limite", meta["fecha_limite"]))
-    return round(falta / metas.meses_hasta(limite, fecha_cobro), 2)
+def _cobro_metas(lista, ahorrado, pendientes, fecha, k, cambios):
+    """Aportaciones de un cobro: [(meta, importe, ¿en tramo?)]. Actualiza lo ahorrado; las metas conseguidas
+    salen de «pendientes» al final del cobro (así el cambio de tramo se nota en el cobro siguiente)."""
+    aportes, conseguidas = [], []
+    for m in lista:
+        cfg = cambios.get(m["id"], {})
+        en_tramo = metas.tramo_activo(m, fecha, pendientes, _sin_pausa(cfg))
+        importe = 0.0 if k in cfg.get("pausa", ()) else metas.cuota(m, ahorrado[m["id"]], fecha, pendientes,
+                                                                     _sin_pausa(cfg))
+        antes = ahorrado[m["id"]]
+        ahorrado[m["id"]] = round(antes + importe, 2)
+        aportes.append((m, importe, en_tramo))
+        if antes < m["objetivo"] - 0.004 <= ahorrado[m["id"]]:
+            conseguidas.append(m)
+    for m in conseguidas:
+        pendientes.discard(m["id"])
+    return aportes, conseguidas
 
 
 def fin_metas(cambios=None, cobros=120):
@@ -203,31 +211,28 @@ def fin_metas(cambios=None, cobros=120):
     cambios = cambios or {}
     dia = dia_habitual()
     ahorrado = estado_inicial_metas(cambios)
-    fin = {}
-    fecha = ciclo.proximo_cobro()
     lista = metas.activas()
-    for m in lista:
-        if ahorrado[m["id"]] >= m["objetivo"] - 0.004:
-            fin[m["id"]] = hoy()
+    pendientes = {m["id"] for m in lista if ahorrado[m["id"]] < m["objetivo"] - 0.004}
+    fin = {m["id"]: hoy() for m in lista if m["id"] not in pendientes}
+    fecha = ciclo.proximo_cobro()
     for k in range(1, cobros + 1):
-        for m in lista:
-            if m["id"] in fin:
-                continue
-            cfg = cambios.get(m["id"], {})
-            if k not in cfg.get("pausa", ()):
-                ahorrado[m["id"]] += aporte(m, ahorrado[m["id"]], fecha, cfg)
-            if ahorrado[m["id"]] >= m["objetivo"] - 0.004:
-                fin[m["id"]] = fecha
-        if len(fin) == len(lista):
+        if not pendientes:
             break
+        _, conseguidas = _cobro_metas([m for m in lista if m["id"] not in fin], ahorrado, pendientes, fecha, k, cambios)
+        for m in conseguidas:
+            fin[m["id"]] = fecha
         fecha = sumar_meses(fecha, 1, dia)
     return {m["id"]: fin.get(m["id"]) for m in lista}
+
+
+def libre_minimo():
+    return config.importe("LIBRE_MINIMO")
 
 
 # ---------- Simulación ----------
 
 def simular(cambios=None, salario=None, extra_salario=0.0, contar_deben=True, sin_metas=False):
-    """Proyección cobro a cobro. cambios: {meta_id: {aporte_modo, aporte_fijo, fecha_limite, pausa: {k}}}."""
+    """Proyección cobro a cobro. cambios: {meta_id: {campo de la meta: valor, …, pausa: {k}}}."""
     cambios = cambios or {}
     base, origen = salario_base()
     if salario is None:
@@ -235,11 +240,13 @@ def simular(cambios=None, salario=None, extra_salario=0.0, contar_deben=True, si
     if salario is None:
         return None
     salario = round(salario + extra_salario, 2)
+    minimo = libre_minimo()
     fechas = fechas_cobro()
     n = len(fechas) - 1
     por_ciclo, sin_fecha, fines = _cacheado(("deudas", tuple(fechas)), lambda: calendario_deudas(fechas))
     lista_metas = [] if sin_metas else metas.activas()
     ahorrado = estado_inicial_metas(cambios)
+    pendientes = {m["id"] for m in metas.activas() if ahorrado[m["id"]] < m["objetivo"] - 0.004}
 
     def base_hoy():
         s = analisis.saldo_actual()
@@ -254,35 +261,39 @@ def simular(cambios=None, salario=None, extra_salario=0.0, contar_deben=True, si
     puente = round(libre_hoy + deben_hoy, 2)
 
     ciclos, eventos, acumulado = [], [], puente
+    en_tramo_antes = {}
     for k in range(1, n + 1):
         fecha = fechas[k - 1]
         items = [x for x in por_ciclo[k] if contar_deben or x[2] != "deben"]
         totales = {c: 0.0 for c in CLASES}
         for _, importe, c in items:
             totales[c] += importe
+        todos, conseguidas = _cobro_metas(lista_metas, ahorrado, pendientes, fecha, k, cambios)
         aportes = []
-        for m in lista_metas:
+        for m, importe, en_tramo in todos:
             cfg = cambios.get(m["id"], {})
-            importe = 0.0 if k in cfg.get("pausa", ()) else aporte(m, ahorrado[m["id"]], fecha, cfg)
             limite = date.fromisoformat(cfg.get("fecha_limite", m["fecha_limite"]))
-            antes = ahorrado[m["id"]]
-            ahorrado[m["id"]] = round(antes + importe, 2)
             if importe:
                 aportes.append((m, importe, limite < fecha and not m["especial"]))
-            if antes < m["objetivo"] - 0.004 <= ahorrado[m["id"]]:
-                eventos.append((fecha, k, "meta", f"consigues «{m['nombre']}»", m["id"]))
+            if en_tramo_antes.get(m["id"]) and not en_tramo and importe:
+                eventos.append((fecha, k, "tramo", f"«{m['nombre']}» vuelve a aportar {euros_cortos(importe)} por cobro",
+                                m["id"]))
+            en_tramo_antes[m["id"]] = en_tramo
+        for m in conseguidas:
+            eventos.append((fecha, k, "meta", f"consigues «{m['nombre']}»", m["id"]))
         totales["metas"] = round(sum(x for _, x, _ in aportes), 2)
         pagos = round(totales["fijos"] + totales["subs"] + totales["cuotas"] + totales["unicos"], 2)
         libre = round(salario + totales["deben"] - pagos - totales["metas"], 2)
         acumulado = round(acumulado + libre, 2)
         if libre < 0 or acumulado < 0:
             estado = "🔴"
-        elif libre < salario * JUSTO:
+        elif libre < minimo - 0.004:
             estado = "🟡"
         else:
             estado = "🟢"
         ciclos.append({"k": k, "fecha": fecha, "fin": fechas[k], "salario": salario, "items": items,
-                       "aportes": aportes, "totales": {c: round(v, 2) for c, v in totales.items()}, "pagos": pagos,
+                       "aportes": aportes, "por_meta": {m["id"]: (importe, en_tramo) for m, importe, en_tramo in todos},
+                       "totales": {c: round(v, 2) for c, v in totales.items()}, "pagos": pagos,
                        "libre": libre, "acumulado": acumulado, "estado": estado,
                        "en_metas": round(sum(ahorrado[m["id"]] for m in lista_metas), 2),
                        "por_dia": round(libre / max(1, (fechas[k] - fecha).days), 2)})
@@ -300,11 +311,13 @@ def simular(cambios=None, salario=None, extra_salario=0.0, contar_deben=True, si
                 eventos.append((fecha, k, "unico", f"pago único «{deuda['nombre']}» {euros_cortos(importe)}", deuda["id"]))
     peor = min(ciclos, key=lambda x: x["libre"])
     sostenible = all(x["estado"] != "🔴" for x in ciclos)
-    maximo_metas = min(round(x["salario"] + x["totales"]["deben"] - x["pagos"], 2) for x in ciclos)
+    maximo_metas = min(round(x["salario"] + x["totales"]["deben"] - x["pagos"] - minimo, 2) for x in ciclos)
+    orden = {"meta": 0, "tramo": 1, "deuda": 2, "deben": 3, "unico": 4}
     return {"salario": salario, "origen": origen if not extra_salario else f"{origen}, {euros_cortos(extra_salario)}",
             "fechas": fechas, "ciclos": ciclos, "puente": puente, "libre_hoy": libre_hoy, "deben_hoy": deben_hoy,
-            "eventos": sorted(eventos, key=lambda x: (x[0], x[2])), "sin_fecha": sin_fecha, "peor": peor,
-            "sostenible": sostenible, "maximo_metas": maximo_metas, "final": ciclos[-1]["acumulado"],
+            "eventos": sorted(eventos, key=lambda x: (x[0], orden[x[2]])), "sin_fecha": sin_fecha, "peor": peor,
+            "sostenible": sostenible, "cumple": sostenible and all(x["estado"] == "🟢" for x in ciclos),
+            "minimo": minimo, "maximo_metas": maximo_metas, "final": ciclos[-1]["acumulado"],
             "rojos": [x for x in ciclos if x["estado"] == "🔴"], "metas": lista_metas, "cambios": cambios,
             "contar_deben": contar_deben}
 
@@ -323,15 +336,26 @@ def veredicto(p):
         return "🔴", (f"No es sostenible: en el cobro de {mes_largo(primero['fecha'])} "
                       + (f"te faltan {euros(-primero['libre'])}" if primero["libre"] < 0
                          else f"tu dinero libre baja a {euros(primero['acumulado'])}"))
-    if any(x["estado"] == "🟡" for x in p["ciclos"]):
-        return "🟡", f"Llega, pero justo: el cobro más ajustado ({mes_largo(p['peor']['fecha'])}) te deja {euros(p['peor']['libre'])}"
+    if not p["cumple"]:
+        justo = next(x for x in p["ciclos"] if x["estado"] == "🟡")
+        return "🟡", (f"Llega, pero en el cobro de {mes_largo(justo['fecha'])} te quedan {euros(justo['libre'])} libres, "
+                      f"menos de los {euros(p['minimo'])} que quieres")
+    if p["minimo"]:
+        return "🟢", f"Sostenible: en cada cobro te quedan al menos {euros(p['peor']['libre'])} libres (quieres {euros(p['minimo'])})"
     return "🟢", f"Sostenible: en cada cobro te quedan al menos {euros(p['peor']['libre'])} libres"
 
 
 # ---------- Propuestas para que sea sostenible (o para acelerar) ----------
+# Cada propuesta tiene una o varias variantes; se recomienda una. «Cumple» = ningún cobro en rojo y en todos
+# te queda al menos el libre mínimo (LIBRE_MINIMO). Los recortes son TEMPORALES (tramos): al terminar,
+# la meta recupera (sube para llegar a su fecha) o se aplaza (vuelve a su cuota normal y se mueve su fecha).
+
+CAMPOS = ("aporte_modo", "aporte_fijo", "fecha_limite", "prioridad", "tramo_aporte", "tramo_hasta", "tramo_despues")
+SIN_TRAMO = {"prioridad": 0, "tramo_aporte": -1, "tramo_hasta": "", "tramo_despues": ""}
+
 
 def aportes_primer_cobro(p):
-    """{meta_id: aportación en el primer cobro proyectado} (base de las propuestas)."""
+    """{meta_id: aportación en el primer cobro proyectado}."""
     base = {}
     for x in p["ciclos"]:
         for m, importe, _ in x["aportes"]:
@@ -339,25 +363,15 @@ def aportes_primer_cobro(p):
     return base
 
 
-def _sin_rojos(cambios, holgado=False):
-    """¿Sin cobros en rojo? Con holgado, además todos en verde (al menos un 5 % del salario libre)."""
+def _cumple(cambios):
     r = simular(cambios)
-    if r is None:
-        return False, r
-    return (all(x["estado"] == "🟢" for x in r["ciclos"]) if holgado else r["sostenible"]), r
+    return (r is not None and r["cumple"]), r
 
 
-def _mejor_criterio(probar):
-    """Primero intenta dejar todo en verde; si no se puede, que al menos no haya rojos."""
-    for holgado in (True, False):
-        resultado = probar(holgado)
-        if resultado is not None:
-            return resultado
-    return None
-
-
-def _buscar(funcion, bajo, alto, pasos=18):
+def _buscar(funcion, bajo, alto, pasos=16):
     """Mayor valor en [bajo, alto] para el que funcion(valor) es cierto (supone monotonía)."""
+    if funcion(alto):
+        return alto
     if not funcion(bajo):
         return None
     for _ in range(pasos):
@@ -369,84 +383,232 @@ def _buscar(funcion, bajo, alto, pasos=18):
     return bajo
 
 
-def propuestas(p):
-    """[{clave, titulo, explicacion, cambios, resultado}] para la configuración actual."""
+def _sin_conseguir():
+    ahorrado = estado_inicial_metas()
+    return [m for m in metas.activas() if ahorrado[m["id"]] < m["objetivo"] - 0.004]
+
+
+def cuota_normal(meta):
+    """Cuota de cada cobro sin tramos: la fija o la necesaria, y nunca menos de lo necesario para llegar a tiempo."""
+    ahorrado = estado_inicial_metas()[meta["id"]]
+    primero = ciclo.proximo_cobro()
+    normal = metas.cuota(meta, ahorrado, primero, set(), {"tramo_aporte": -1})
+    falta = max(0.0, meta["objetivo"] - ahorrado)
+    necesaria = falta / metas.meses_hasta(date.fromisoformat(meta["fecha_limite"]), primero)
+    return round(max(normal, min(necesaria, falta)), 2)
+
+
+def _con_fechas_aplazadas(cambios, ids):
+    """En «aplazar», la fecha de cada meta recortada pasa a ser el cobro en que de verdad llega."""
+    fines = fin_metas(cambios)
+    for meta_id in ids:
+        meta = metas.obtener(meta_id)
+        fin = fines.get(meta_id)
+        if fin and fin.isoformat() > meta["fecha_limite"]:
+            cambios[meta_id]["fecha_limite"] = sumar_meses(fin, 0, 28).isoformat()
+    return cambios
+
+
+def _variante(codigo, nombre, cambios, ids):
+    ok, r = _cumple(cambios)
+    motivo = "" if ok else (veredicto(r)[1] if r else "")
+    corto = {"r": "recuperar", "a": "aplazar", "m": "menos", "n": "nada"}.get(codigo, "propuesta")
+    return {"codigo": codigo, "nombre": nombre, "corto": corto, "cambios": cambios, "resultado": r, "posible": ok,
+            "motivo": motivo, "reducidas": ids}
+
+
+def priorizar(prioritarias):
+    """Propuesta «🥇 Priorizar»: las prioritarias (en orden) aportan normal; las demás, lo justo para cumplir
+    mientras la anterior no esté conseguida. Variantes «recuperar» y «aplazar»."""
+    activas = _sin_conseguir()
+    ids = [i for i in prioritarias if any(m["id"] == i for m in activas)]
+    if not ids:
+        return None
+    por_id = {m["id"]: m for m in activas}
+    resto = sorted((m for m in activas if m["id"] not in ids), key=lambda m: m["fecha_limite"])
+    ranking = [por_id[i] for i in ids] + resto
+    if len(ranking) < 2:
+        return None
+    normales = {m["id"]: cuota_normal(m) for m in ranking}
+    variantes = []
+    for despues in ("recuperar", "aplazar"):
+        cambios = {m["id"]: {**SIN_TRAMO, "prioridad": (ids.index(m["id"]) + 1) if m["id"] in ids else 0}
+                   for m in ranking}
+        for m in resto:  # las no prioritarias parten de su cuota normal (nunca de un recorte antiguo)
+            if despues == "aplazar":
+                cambios[m["id"]].update(aporte_modo="fija", aporte_fijo=round(normales[m["id"]]))
+            elif m["aporte_modo"] == "fija" and m["aporte_fijo"] < normales[m["id"]] - 0.5:
+                cambios[m["id"]]["aporte_modo"] = "necesaria"
+        reducidas = []
+
+        def reducida(m, x, despues=despues):
+            espera = ids[ids.index(m["id"]) - 1] if m["id"] in ids else ids[-1]
+            cfg = {"tramo_aporte": math.floor(normales[m["id"]] * x), "tramo_hasta": f"meta:{espera}",
+                   "tramo_despues": despues}
+            if despues == "aplazar":
+                cfg.update(aporte_modo="fija", aporte_fijo=round(normales[m["id"]]))
+            return cfg
+        if not _cumple(cambios)[0]:
+            for m in reversed(ranking[1:]):
+                previos = {k: dict(v) for k, v in cambios.items()}
+
+                def con(x, m=m, previos=previos):
+                    nuevo = {k: dict(v) for k, v in previos.items()}
+                    nuevo[m["id"]].update(reducida(m, x))
+                    return nuevo
+                reducidas.append(m["id"])
+                x = _buscar(lambda v: _cumple(con(v))[0], 0.0, 1.0)
+                cambios = con(x if x is not None else 0.0)
+                if x is not None:
+                    break
+        if despues == "aplazar" and reducidas and not _cumple(cambios)[0]:
+            # Ni esperando cabe su cuota normal después: se baja a lo que puedas pagar (y llega más tarde).
+            for meta_id in reducidas:
+                previos = {k: dict(v) for k, v in cambios.items()}
+
+                def con_despues(y, meta_id=meta_id, previos=previos):
+                    nuevo = {k: dict(v) for k, v in previos.items()}
+                    nuevo[meta_id]["aporte_fijo"] = max(MINIMO, math.floor(normales[meta_id] * y))
+                    return nuevo
+                y = _buscar(lambda v: _cumple(con_despues(v))[0], 0.0, 1.0)
+                cambios = con_despues(y if y is not None else 0.0)
+                if y is not None:
+                    break
+        if despues == "aplazar":
+            cambios = _con_fechas_aplazadas(cambios, reducidas)
+        nombre = "🔁 Recuperar" if despues == "recuperar" else "📅 Aplazar"
+        variantes.append(_variante(despues[0], nombre, cambios, reducidas))
+    posibles = [v for v in variantes if v["posible"]]
+    nombres = " y ".join(f"«{por_id[i]['nombre']}»" for i in ids)
+    return {"clave": "Q" + "-".join(map(str, ids)), "titulo": f"🥇 Priorizar {nombres}",
+            "explicacion": ("Las prioritarias aportan lo normal. Las demás aportan menos (o nada) hasta conseguirlas; "
+                            "después recuperan para llegar a su fecha o se aplazan."),
+            "variantes": variantes, "recomendada": posibles[0]["codigo"] if posibles else None,
+            "prioritarias": ids}
+
+
+def recortar(p):
+    """Propuesta «✂️ Recortar»: todas las metas aportan menos (o nada) hasta el primer cobro en que vuelve a
+    caber su cuota normal; después se aplazan (cuota normal y fecha nueva)."""
+    activas = _sin_conseguir()
+    if not activas:
+        return None
+    normales = {m["id"]: cuota_normal(m) for m in activas}
+    ids = [m["id"] for m in activas]
+
+    def con(x, hasta):
+        return {m["id"]: {"prioridad": 0, "tramo_aporte": math.floor(normales[m["id"]] * x),
+                          "tramo_hasta": f"fecha:{hasta.isoformat()}", "tramo_despues": "aplazar",
+                          "aporte_modo": "fija", "aporte_fijo": round(normales[m["id"]])} for m in activas}
+    hasta = next((f for f in p["fechas"][1:] if _cumple(con(0.0, f))[0]), None)
+    if not hasta:
+        return None
+    variantes = []
+    x = _buscar(lambda v: _cumple(con(v, hasta))[0], 0.0, 1.0)
+    if x and sum(math.floor(normales[i] * x) for i in ids) >= 5:
+        variantes.append(_variante("m", f"✂️ Aportar menos (el {x * 100:.0f} %)",
+                                   _con_fechas_aplazadas(con(x, hasta), ids), ids))
+    variantes.append(_variante("n", "⏸️ No aportar nada", _con_fechas_aplazadas(con(0.0, hasta), ids), ids))
+    posibles = [v for v in variantes if v["posible"]]
+    return {"clave": "R", "titulo": f"✂️ Recortar todas hasta {mes_largo(hasta)}",
+            "explicacion": (f"Hasta el cobro de {mes_largo(hasta)} tus metas aportan menos o nada; después vuelven a su "
+                            "cuota normal y se aplazan sus fechas."),
+            "variantes": variantes, "recomendada": posibles[0]["codigo"] if posibles else None, "hasta": hasta}
+
+
+def alargar(p):
+    """Propuesta «📅 Alargar»: las metas con aportación «la necesaria» alargan su fecha lo justo."""
+    necesarias = [m for m in _sin_conseguir() if m["aporte_modo"] != "fija" and not m["especial"]
+                  and m["tramo_aporte"] < 0]
+    if not necesarias:
+        return None
+
+    def con(n):
+        return {m["id"]: {"fecha_limite": sumar_meses(date.fromisoformat(m["fecha_limite"]), n, 28).isoformat()}
+                for m in necesarias}
+    meses = next((n for n in (1, 2, 3, 4, 6, 9, 12, 18, 24, 36) if _cumple(con(n))[0]), None)
+    if not meses:
+        return None
+    variante = _variante("u", f"📅 Alargar {meses} mes{'es' if meses > 1 else ''}", con(meses), [m["id"] for m in necesarias])
+    return {"clave": "B", "titulo": variante["nombre"] + " las fechas",
+            "explicacion": "Las metas con aportación «la necesaria» piden menos cada cobro porque tienen más tiempo.",
+            "variantes": [variante], "recomendada": "u"}
+
+
+def acelerar(p):
+    """Propuesta «🚀 Acelerar»: lo que sobra por encima de tu libre mínimo en el cobro más justo va a tus metas."""
+    if not p["cumple"]:
+        return None
+    sobra = math.floor(p["peor"]["libre"] - p["minimo"])
+    normales = [m for m in _sin_conseguir() if not m["especial"] and m["tramo_aporte"] < 0]
+    faltas = {m["id"]: max(0.0, m["objetivo"] - estado_inicial_metas()[m["id"]]) for m in normales}
+    total = sum(faltas.values())
+    if sobra < 10 or total <= 0:
+        return None
+    base = {m["id"]: cuota_normal(m) for m in normales}
+
+    def con(extra):
+        return {m["id"]: {"aporte_modo": "fija", "aporte_fijo": round(base[m["id"]] + extra * faltas[m["id"]] / total)}
+                for m in normales}
+    extra = _buscar(lambda v: _cumple(con(v))[0], 0.0, float(sobra))
+    if not extra or extra < 10:
+        return None
+    extra = math.floor(extra)
+    variante = _variante("u", f"🚀 Acelerar (+{euros_cortos(extra)}/cobro)", con(extra), [m["id"] for m in normales])
+    return {"clave": "D", "titulo": variante["nombre"],
+            "explicacion": (f"Lo que te sobra por encima de tu libre mínimo ({euros_cortos(p['minimo'])}) va a tus metas, "
+                            "repartido según lo que le falta a cada una: llegan antes."),
+            "variantes": [variante], "recomendada": "u"}
+
+
+def prioritarias_actuales():
+    """Ids de las metas marcadas como prioritarias (en orden) o, si no hay, la de fecha más cercana."""
+    activas = _sin_conseguir()
+    marcadas = sorted((m for m in activas if m["prioridad"] > 0), key=lambda m: m["prioridad"])
+    if marcadas:
+        return [m["id"] for m in marcadas]
+    normales = sorted((m for m in activas if not m["especial"]), key=lambda m: m["fecha_limite"])
+    return [normales[0]["id"]] if normales else []
+
+
+def _con_cache(funcion, *args):
     global _CACHE
+    if _CACHE is not None:
+        return funcion(*args)
     _CACHE = {}
     try:
-        return _propuestas(p)
+        return funcion(*args)
     finally:
         _CACHE = None
 
 
-def _propuestas(p):
-    base = aportes_primer_cobro(p)
-    activas = [m for m in p["metas"] if m["id"] in base]
-    lista = []
-    if not activas:
-        return lista
-    if not p["sostenible"]:
-        # A) Recortar todas las aportaciones en la misma proporción
-        def con_factor(f):
-            return {m["id"]: {"aporte_modo": "fija", "aporte_fijo": max(MINIMO, math.floor(base[m["id"]] * f))}
-                    for m in activas}
-        f = _mejor_criterio(lambda h: _buscar(lambda x: _sin_rojos(con_factor(x), h)[0], 0.0, 1.0))
-        if f is not None:
-            cambios = con_factor(f)
-            lista.append({"clave": "A", "titulo": f"✂️ Recortar todas las metas al {f * 100:.0f} %",
-                          "explicacion": "Cada meta aporta lo mismo en proporción; llegan más tarde.",
-                          "cambios": cambios, "resultado": simular(cambios)})
-        # B) Alargar las fechas de las metas con aportación «necesaria»
-        necesarias = [m for m in activas if m["aporte_modo"] != "fija" and not m["especial"]]
-        if necesarias:
-            def con_meses(n):
-                return {m["id"]: {"fecha_limite": sumar_meses(date.fromisoformat(m["fecha_limite"]), n, 28).isoformat()}
-                        for m in necesarias}
-            plazos = (1, 2, 3, 4, 6, 9, 12, 18, 24, 36)
-            meses = _mejor_criterio(lambda h: next((n for n in plazos if _sin_rojos(con_meses(n), h)[0]), None))
-            if meses:
-                cambios = con_meses(meses)
-                lista.append({"clave": "B", "titulo": f"📅 Alargar {meses} mes{'es' if meses > 1 else ''} las fechas",
-                              "explicacion": "Las metas con aportación «la necesaria» piden menos cada cobro.",
-                              "cambios": cambios, "resultado": simular(cambios)})
-        # C) Por prioridad: se mantiene la de fecha más cercana y se recortan las demás, empezando por la más lejana
-        orden = sorted(activas, key=lambda m: (m["especial"] != "colchon", m["fecha_limite"]))
+def propuestas(p):
+    """Propuestas para la configuración actual (si no cumple: priorizar, recortar, alargar; si sobra: acelerar)."""
+    def calcular():
+        if p["cumple"]:
+            return [x for x in (acelerar(p),) if x]
+        return [x for x in (priorizar(prioritarias_actuales()), recortar(p), alargar(p)) if x]
+    return _con_cache(calcular)
 
-        def priorizar(holgado):
-            cambios = {}
-            for m in reversed(orden[1:]):
-                def con(x, m=m, previos=dict(cambios)):
-                    return {**previos, m["id"]: {"aporte_modo": "fija",
-                                                 "aporte_fijo": max(MINIMO, math.floor(base[m["id"]] * x))}}
-                x = _buscar(lambda v: _sin_rojos(con(v), holgado)[0], 0.0, 1.0)
-                cambios = con(x if x is not None else 0.0)
-                if x is not None:
-                    return cambios
-            return None
-        cambios = _mejor_criterio(priorizar) if len(orden) > 1 else None
-        if cambios:
-            lista.append({"clave": "C", "titulo": f"🥇 Priorizar «{orden[0]['nombre']}»",
-                          "explicacion": "La meta más próxima sigue igual; se recortan las demás, la más lejana primero.",
-                          "cambios": cambios, "resultado": simular(cambios)})
-    elif p["peor"]["libre"] > 20:
-        # D) Acelerar: la mitad de lo que sobra en el cobro más justo, repartido según lo que le falta a cada meta
-        extra = math.floor(p["peor"]["libre"] / 2)
-        normales = [m for m in activas if not m["especial"]]
-        faltas = {m["id"]: max(0.0, m["objetivo"] - metas.ahorrado(m)) for m in normales}
-        total = sum(faltas.values())
-        if total > 0 and extra >= 10:
-            cambios = {m["id"]: {"aporte_modo": "fija", "aporte_fijo": round(base[m["id"]] + extra * faltas[m["id"]] / total)}
-                       for m in normales}
-            lista.append({"clave": "D", "titulo": f"🚀 Acelerar tus metas (+{euros_cortos(extra)}/cobro)",
-                          "explicacion": "Usas la mitad de lo que te sobra en el cobro más justo para llegar antes.",
-                          "cambios": cambios, "resultado": simular(cambios)})
-    return lista
+
+def propuesta(p, clave):
+    """Una propuesta por su clave («Q3-1», «R», «B», «D»)."""
+    def calcular():
+        if clave.startswith("Q"):
+            return priorizar([int(x) for x in clave[1:].split("-") if x.isdigit()])
+        return {"R": recortar, "B": alargar, "D": acelerar}.get(clave, lambda _: None)(p)
+    return _con_cache(calcular)
+
+
+def variante(x, codigo=None):
+    codigo = codigo or x["recomendada"]
+    return next((v for v in x["variantes"] if v["codigo"] == codigo), None)
 
 
 def firma(p):
     """Identifica la configuración actual (para no volver a proponer lo que ignoraste)."""
-    partes = [f"{p['salario']:.0f}"] + [f"{m['id']}:{m['aporte_modo']}:{m['aporte_fijo']:.0f}:{m['fecha_limite']}"
-                                         for m in p["metas"]]
+    partes = [f"{p['salario']:.0f}", f"{p['minimo']:.0f}"]
+    partes += [":".join(str(m[c]) for c in ("id",) + CAMPOS) for m in p["metas"]]
     partes += [str(d["id"]) for d in deudas.activas()]
     return hashlib.sha1("|".join(partes).encode()).hexdigest()[:10]
 
@@ -455,17 +617,36 @@ def ignorada(p):
     return datos.enviado(f"proy_ignorar:{firma(p)}")
 
 
+def _literal(valor):
+    if isinstance(valor, (int, float)):
+        return repr(float(valor)) if isinstance(valor, float) else str(int(valor))
+    return "'" + str(valor).replace("'", "''") + "'"
+
+
 def aplicar(cambios, descripcion):
     """Guarda los cambios de una propuesta en las metas. Devuelve el id de acción para deshacer."""
     deshacer = []
     for meta_id, cfg in cambios.items():
         meta = metas.obtener(meta_id)
-        deshacer.append(f"UPDATE metas SET aporte_modo = '{meta['aporte_modo']}', aporte_fijo = {float(meta['aporte_fijo'])}, "
-                        f"fecha_limite = '{meta['fecha_limite']}' WHERE id = {int(meta_id)} AND ?1 IS NOT NULL")
-        for campo in ("aporte_modo", "aporte_fijo", "fecha_limite"):
+        valores = ", ".join(f"{c} = {_literal(meta[c])}" for c in CAMPOS)
+        deshacer.append(f"UPDATE metas SET {valores} WHERE id = {int(meta_id)} AND ?1 IS NOT NULL")
+        for campo in CAMPOS:
             if campo in cfg:
                 metas.configurar(meta_id, campo, cfg[campo])
     return datos.registrar_accion("metas", 0, "; ".join(deshacer), descripcion)
+
+
+def metas_tarde():
+    """[(meta, fin estimado)] con aportación fija que, sin tramo, no llegan a su fecha (p. ej. tras un recorte antiguo)."""
+    fines = fin_metas()
+    lista = []
+    for m in _sin_conseguir():
+        if m["especial"] or m["tramo_aporte"] >= 0 or m["aporte_modo"] != "fija":
+            continue
+        fin = fines.get(m["id"])
+        if fin is None or fin.isoformat() > m["fecha_limite"]:
+            lista.append((m, fin))
+    return lista
 
 
 # ---------- Escenarios ----------
@@ -483,10 +664,10 @@ def escenarios(p):
 def aviso_si_insostenible():
     """Texto corto si la configuración actual deja algún cobro en rojo (para avisar tras un cambio)."""
     p = simular()
-    if not p or p["sostenible"]:
+    if not p or p["cumple"]:
         return None
     icono, texto = veredicto(p)
-    return f"{icono} <b>Proyección</b>: {texto}. Mira 📈 Proyección › ⚖️ Ajustar."
+    return f"{icono} <b>Proyección</b>: {texto}. Elige qué meta priorizar o mira las propuestas."
 
 
 def resumen_corto():

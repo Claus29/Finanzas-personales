@@ -250,6 +250,9 @@ def _candidatos_metas(d, ahora):
 def texto_meta(meta, importe, inicio, d, nombres):
     nombre = analisis.e(meta["nombre"])
     desde = f"\n<i>Pendiente desde el {fecha_corta(inicio)}.</i>" if d > inicio else ""
+    espera = metas.en_espera(meta, d)
+    if espera:
+        desde += f"\n<i>Cuota reducida {analisis.e(espera)} (prioridad).</i>"
     icono = "🛟" if meta["especial"] == "colchon" else "🎯"
     if meta["uid"]:
         cuenta = analisis.e(nombres.get(meta["uid"], "su cuenta"))

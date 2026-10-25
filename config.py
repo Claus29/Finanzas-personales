@@ -52,6 +52,8 @@ POR_DEFECTO = {
     # v9: proyección (salario estimado; 0 = el último cobrado) y mes final (AAAA-MM; vacío = 12 cobros)
     "SALARIO_ESTIMADO": "0",
     "PROYECCION_HASTA": "",
+    # v10: dinero que quieres que te quede libre en cada cobro (0 = todo el salario a pagos y metas)
+    "LIBRE_MINIMO": "0",
 }
 
 

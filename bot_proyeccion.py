@@ -3,7 +3,8 @@
 Pantallas (botones «pr:»): resumen, mes a mes, calendario, metas, ajustar y ¿y si…?; hasta qué mes
 (PROYECCION_HASTA) y salario estimado (SALARIO_ESTIMADO). Propuestas para que sea sostenible:
 «prp:X» las enseña, «pra:X» las aplica (con deshacer) y «pri» las ignora. Simulador por meta: «prs:».
-Pasos escritos: «proy_hasta» y «proy_salario». Nunca consulta al banco.
+«prq:ID» prioriza una meta; «pro:» elige varias prioritarias en orden. Libre mínimo por cobro: «pr:lib».
+Pasos escritos: «proy_hasta», «proy_salario» y «proy_libre». Nunca consulta al banco.
 """
 import asyncio
 from datetime import date
@@ -17,7 +18,7 @@ import metas
 import proyeccion as pr
 from formato import euros, euros_cortos, fecha_corta, leer_importe, leer_mes, sumar_meses
 
-PREFIJOS = {"pr", "prp", "pra", "pri", "prs"}
+PREFIJOS = {"pr", "prp", "pra", "pri", "prs", "prq", "pro"}
 PASO = 20  # € que suma o resta el simulador por meta
 
 
@@ -49,8 +50,16 @@ def botones_menu(actual="res"):
                ("aju", "⚖️ Ajustar"), ("esc", "🧪 ¿Y si…?")]
     opciones = [(t, f"pr:{c}") for c, t in nombres if c != actual]
     filas = [opciones[i:i + 3] for i in range(0, len(opciones), 3)]
-    filas.append([(f"📆 Hasta: {pr.aviso_horizonte()}", "pr:hz"), ("💶 Salario", "pr:sal")])
+    filas.append([(f"📆 Hasta: {pr.aviso_horizonte()}", "pr:hz"), ("💶 Salario", "pr:sal"),
+                  (f"💸 Libre: {euros_cortos(pr.libre_minimo())}", "pr:lib")])
     return filas
+
+
+def botones_prioridad(p, maximo=4):
+    """Un botón «🥇 Nombre» por meta sin conseguir (prioriza esa y las demás esperan)."""
+    lista = [m for m in p["metas"] if m["id"] in pr.aportes_primer_cobro(p)][:maximo]
+    botones = [(f"🥇 {m['nombre'][:16]}", f"prq:{m['id']}") for m in lista]
+    return [botones[i:i + 2] for i in range(0, len(botones), 2)]
 
 
 def sin_salario():
@@ -87,7 +96,9 @@ def resumen():
     icono, veredicto = pr.veredicto(p)
     primero = ciclos[0]
     lineas = [f"📈 <b>Proyección</b> · {len(ciclos)} cobros, hasta {pr.mes_largo(ciclos[-1]['fecha'])}",
-              f"💶 Salario: <b>{euros(p['salario'])}</b> <i>({p['origen']})</i>", "",
+              f"💶 Salario: <b>{euros(p['salario'])}</b> <i>({p['origen']})</i>",
+              f"💸 Libre que quieres en cada cobro: <b>{euros(p['minimo'])}</b>"
+              + (" <i>(todo el salario a pagos y metas)</i>" if not p["minimo"] else ""), "",
               f"{icono} <b>{veredicto}</b>", "",
               f"<b>Hasta el próximo cobro ({fecha_corta(primero['fecha'])})</b>",
               f"💰 Dinero libre hoy: {euros(p['libre_hoy'])}"
@@ -109,15 +120,16 @@ def resumen():
     if devuelven:
         lineas.append(f"• Te devolverán {euros(devuelven)} (cuenta en la proyección)")
     lineas.append(f"• Comprometido en el próximo cobro: {comprometido:.0%} del salario (pagos + metas)".replace("%", " %"))
-    lineas.append(f"• Para metas puedes destinar hasta <b>{euros(p['maximo_metas'])}</b> por cobro sin quedarte en rojo "
+    lineas.append(f"• Para metas puedes destinar hasta <b>{euros(p['maximo_metas'])}</b> por cobro dejando tu libre mínimo "
                   f"(ahora apartas {euros(primero['totales']['metas'])})")
     fines = pr.fin_metas()
     if any(not x["especial"] and fines.get(x["id"]) is None for x in p["metas"]):
         lineas.append("• ⚠️ Alguna meta no llega nunca con la aportación actual: mira 🎯 Metas")
     filas = botones_menu("res")
-    if not p["sostenible"] and not pr.ignorada(p):
-        lineas += ["", "⚖️ <b>Tengo propuestas para que sea sostenible.</b> Míralas en «⚖️ Ajustar» (o ignóralas)."]
-        filas.insert(0, [("⚖️ Ver propuestas", "pr:aju"), ("🙈 Ignorar", "pri")])
+    if not p["cumple"] and not pr.ignorada(p):
+        lineas += ["", "⚖️ <b>Así no te queda lo que quieres.</b> Elige qué meta priorizar (las demás esperan y después "
+                       "recuperan o se aplazan) o mira todas las propuestas."]
+        filas = botones_prioridad(p) + [[("⚖️ Ver propuestas", "pr:aju"), ("🙈 Ignorar", "pri")]] + filas
     lineas += ["", "💡 <i>Qué significa: «libre» es lo que te queda de cada cobro después de pagar todo y apartar lo de "
                    "tus metas (no se resta lo que gastas en el día a día). Si algún cobro sale en rojo, la configuración "
                    "actual no es sostenible.</i>"]
@@ -168,7 +180,7 @@ def calendario():
         if etiqueta != mes_actual:
             lineas.append(f"<b>{etiqueta.capitalize()}</b>")
             mes_actual = etiqueta
-        icono = {"deuda": "🔓", "meta": "🏁", "deben": "🤝", "unico": "🧾"}[tipo]
+        icono = {"deuda": "🔓", "meta": "🏁", "deben": "🤝", "unico": "🧾", "tramo": "🔁"}[tipo]
         lineas.append(f"   {icono} {e(texto)}")
     if not p["eventos"]:
         lineas.append("No hay cambios en este periodo: cada cobro se reparte igual.")
@@ -193,25 +205,56 @@ def calendario():
     return "\n".join(lineas), imagenes, botones_menu("cal")
 
 
+def fases(p, meta_id):
+    """(cuota en espera o None, cuota después o None, primer cobro después) de una meta en la proyección p."""
+    espera = despues = cuando = None
+    for c in p["ciclos"]:
+        importe, en_tramo = c["por_meta"].get(meta_id, (0.0, False))
+        if en_tramo and espera is None:
+            espera = importe
+        elif not en_tramo and espera is not None and importe > 0:
+            despues, cuando = importe, c["fecha"]
+            break
+    return espera, despues, cuando
+
+
+def texto_hasta(cambios_o_meta, fines):
+    hasta = cambios_o_meta.get("tramo_hasta", "") if isinstance(cambios_o_meta, dict) else cambios_o_meta["tramo_hasta"]
+    if hasta.startswith("meta:"):
+        otra = metas.obtener(int(hasta[5:]))
+        fin = fines.get(int(hasta[5:]))
+        return (f"hasta conseguir «{e(otra['nombre'])}»" if otra else "hasta tu prioritaria") + \
+            (f" (≈ {pr.mes_corto(fin)})" if fin else "")
+    if hasta.startswith("fecha:"):
+        return f"hasta el cobro de {pr.mes_corto(date.fromisoformat(hasta[6:]))}"
+    return ""
+
+
 def pantalla_metas():
     p = pr.simular()
     if not p:
         return sin_salario()
     if not p["metas"]:
         return ("🎯 <b>Metas en la proyección</b>\n\nNo tienes metas activas: todo lo libre es tuyo. "
-                f"Podrías destinar hasta {euros(p['maximo_metas'])} por cobro a metas sin quedarte en rojo.",
+                f"Podrías destinar hasta {euros(p['maximo_metas'])} por cobro a metas dejando tu libre mínimo.",
                 [], botones_menu("met"))
     base = pr.aportes_primer_cobro(p)
     fines = pr.fin_metas()
     lineas = ["🎯 <b>Metas en la proyección</b>", ""]
     filas_grafico = []
-    for m in p["metas"]:
+    for m in sorted(p["metas"], key=lambda m: (m["prioridad"] == 0, m["prioridad"], m["fecha_limite"])):
         aporte = base.get(m["id"], 0.0)
         fin = fines.get(m["id"])
         limite = None if m["especial"] else date.fromisoformat(m["fecha_limite"])
         modo = f"fija de {euros_cortos(m['aporte_fijo'])}" if m["aporte_modo"] == "fija" and m["aporte_fijo"] else "la necesaria"
-        lineas.append(f"{'🛟' if m['especial'] else '🎯'} <b>{e(m['nombre'])}</b> · {euros(aporte)} por cobro "
-                      f"({aporte / p['salario']:.0%} del salario) · {modo}".replace("%", " %"))
+        icono = "🛟" if m["especial"] else ("🥇" if m["prioridad"] else "🎯")
+        lineas.append(f"{icono} <b>{e(m['nombre'])}</b>" + (f" · prioridad {m['prioridad']}" if m["prioridad"] else "")
+                      + f" · {euros(aporte)} por cobro ({aporte / p['salario']:.0%} del salario) · {modo}".replace("%", " %"))
+        espera, despues, cuando = fases(p, m["id"])
+        if m["tramo_aporte"] >= 0 and espera is not None:
+            tras = ("sube para llegar a su fecha" if m["tramo_despues"] == "recuperar" else "vuelve a su cuota (aplazada)")
+            lineas.append(f"   ⏸️ {euros_cortos(espera)} {texto_hasta(m, fines)}; después {tras}"
+                          + (f": {euros_cortos(despues)} desde {pr.mes_corto(cuando)}" if despues else ""))
         if fin:
             tarde = limite and fin > limite
             lineas.append(f"   {'🔴 llegas tarde' if tarde else '✅ llegas'} en {pr.mes_largo(fin)}"
@@ -221,36 +264,58 @@ def pantalla_metas():
         filas_grafico.append((m["nombre"], aporte, fin, limite))
     total = sum(base.values())
     lineas += ["", f"Total: <b>{euros(total)}</b> por cobro · puedes destinar hasta {euros(p['maximo_metas'])} "
-                   "sin quedarte en rojo"]
+                   "dejando tu libre mínimo"]
     if total:
         mayor = max(p["metas"], key=lambda m: base.get(m["id"], 0))
         lineas.append(f"La que más pesa: {e(mayor['nombre'])} ({base.get(mayor['id'], 0) / total:.0%} de lo que apartas)"
                       .replace("%", " %"))
     lineas += ["", "💡 <i>Qué significa: lo que aparta cada meta en el próximo cobro y cuándo la consigues si sigues así. "
-                   "Para cambiarlo, usa «⚖️ Ajustar».</i>"]
-    return "\n".join(lineas), [go.metas(filas_grafico, p["salario"], pie(p))], botones_menu("met")
+                   "Para cambiarlo, prioriza una meta o usa «⚖️ Ajustar».</i>"]
+    return "\n".join(lineas), [go.metas(filas_grafico, p["salario"], pie(p))], botones_prioridad(p) + botones_menu("met")
+
+
+def linea_variante(v, recomendada):
+    estrella = "⭐ " if recomendada else ""
+    if not v["posible"]:
+        return f"{estrella}{v['nombre']}: ✖️ no es posible ({e(v['motivo'][0].lower() + v['motivo'][1:]) if v['motivo'] else 'no cumple'})"
+    r = v["resultado"]
+    return (f"{estrella}{v['nombre']}{' (recomendada)' if recomendada else ''}: cobro más justo {euros(r['peor']['libre'])} "
+            f"· acabas con {euros(r['final'])}")
 
 
 def ajustar(sim):
-    """Propuestas automáticas y simulador por meta (sim: {meta_id: {"delta": €, "meses": n}})."""
+    """Prioridades, propuestas con sus variantes y simulador por meta (sim: {meta_id: {"delta": €, "meses": n}})."""
     p = pr.simular()
     if not p:
         return sin_salario()
     icono, veredicto = pr.veredicto(p)
-    lineas = ["⚖️ <b>Ajustar tus metas</b>", f"Ahora: {icono} {veredicto}", ""]
+    lineas = ["⚖️ <b>Ajustar tus metas</b>", f"Ahora: {icono} {veredicto}",
+              f"💸 Libre que quieres en cada cobro: {euros(p['minimo'])} <i>(cámbialo abajo)</i>", ""]
     filas = []
+    prioritarias = [m for m in p["metas"] if m["prioridad"]]
+    en_espera = [m for m in p["metas"] if m["tramo_aporte"] >= 0]
+    if prioritarias or en_espera:
+        fines = pr.fin_metas()
+        lineas.append("🥇 <b>Prioridades</b>: " + ", ".join(f"{m['prioridad']}.ª {e(m['nombre'])}"
+                                                            for m in sorted(prioritarias, key=lambda m: m["prioridad"])))
+        for m in en_espera:
+            lineas.append(f"   ⏸️ {e(m['nombre'])}: {euros_cortos(m['tramo_aporte'])} {texto_hasta(m, fines)}, "
+                          f"después {'recupera' if m['tramo_despues'] == 'recuperar' else 'se aplaza'}")
+    if p["metas"]:
+        lineas.append("<b>Elige qué meta priorizar</b> (las demás esperan) o varias en orden con «🔢»:")
+        filas += botones_prioridad(p, 6) + [[("🔢 Ordenar varias prioritarias", "pro:ini")]]
     propuestas = pr.propuestas(p)
     if propuestas:
-        lineas.append("<b>Propuestas</b> (puedes aplicarlas o ignorarlas):")
+        lineas += ["", "<b>Propuestas</b> (puedes aplicarlas o ignorarlas):"]
         for x in propuestas:
-            r = x["resultado"]
-            lineas.append(f"{x['titulo']}: {x['explicacion']} → cobro más justo {euros(r['peor']['libre'])}, "
-                          f"acabas con {euros(r['final'])}")
+            lineas.append(f"{x['titulo']}")
+            lineas += [f"   {linea_variante(v, v['codigo'] == x['recomendada'] and len(x['variantes']) > 1)}"
+                       for v in x["variantes"]]
             filas.append([(f"Ver: {x['titulo']}", f"prp:{x['clave']}")])
-        if not p["sostenible"]:
+        if not p["cumple"]:
             filas.append([("🙈 Ignorar propuestas", "pri")])
     elif p["metas"]:
-        lineas.append("✅ No hace falta ajustar nada.")
+        lineas += ["", "✅ No hace falta ajustar nada."]
     imagenes = []
     if p["metas"]:
         lineas += ["", "<b>Simulador</b>: cambia la aportación o la fecha de una meta y mira el resultado "
@@ -279,8 +344,9 @@ def ajustar(sim):
             filas.append([("✅ Aplicar cambios", "prs:ok"), ("↩️ Quitar", "prs:x")])
             imagenes.append(go.comparacion([("Ahora", p), ("Con tus cambios", r)], pie(p), "Antes y después",
                                            "Lo libre en cada cobro con tus cambios"))
-    lineas += ["", "💡 <i>Qué significa: si algún cobro sale en rojo, recortar aportaciones o alargar fechas lo arregla; "
-                   "si te sobra, puedes acelerar tus metas.</i>"]
+    lineas += ["", "💡 <i>Qué significa: priorizar una meta hace que las demás aporten menos (o nada) mientras tanto; "
+                   "cuando la consigues, las demás recuperan (suben para llegar a su fecha) o se aplazan (vuelven a su "
+                   "cuota y llegan más tarde). Tú eliges; el bot recomienda la que te deja tu libre mínimo.</i>"]
     return "\n".join(lineas), imagenes, filas + botones_menu("aju")
 
 
@@ -304,35 +370,95 @@ def cambios_simulados(sim):
     return cambios
 
 
+def describir_meta(p, v, meta_id, fines):
+    """Una línea con lo que pasa con una meta en una variante: espera, después y cuándo llega."""
+    meta = metas.obtener(meta_id)
+    cfg = v["cambios"].get(meta_id, {})
+    r = v["resultado"]
+    fin = fines.get(meta_id)
+    limite = date.fromisoformat(meta["fecha_limite"])
+    antes = pr.aportes_primer_cobro(p).get(meta_id, 0.0)
+    espera, despues, cuando = fases(r, meta_id)
+    llega = f"llega en {pr.mes_corto(fin)}" if fin else "no llega"
+    if fin and not meta["especial"]:
+        llega += " ✅ a tiempo" if fin <= limite else f" (antes {pr.mes_corto(limite)})"
+    if espera is not None:
+        tras = (f"después {euros_cortos(despues)} por cobro desde {pr.mes_corto(cuando)}" if despues
+                else "la consigues antes de que acabe la espera")
+        return f"• {e(meta['nombre'])}: {euros_cortos(espera)} por cobro {texto_hasta(cfg, fines)}; {tras} → {llega}"
+    nuevo = pr.aportes_primer_cobro(r).get(meta_id, 0.0)
+    return f"• {e(meta['nombre'])}: {euros_cortos(antes)} → {euros_cortos(nuevo)} por cobro → {llega}"
+
+
 def propuesta(clave):
     p = pr.simular()
-    x = next((x for x in pr.propuestas(p) if x["clave"] == clave), None) if p else None
+    x = pr.propuesta(p, clave) if p else None
     if not x:
-        return "⚖️ Esa propuesta ya no aplica (algo ha cambiado).", [], botones_menu("aju")
-    r = x["resultado"]
-    icono, veredicto = pr.veredicto(r)
-    lineas = [f"{x['titulo']}", f"<i>{x['explicacion']}</i>", "", "<b>Cambios en tus metas</b>"]
-    fines_antes, fines_despues = pr.fin_metas(), pr.fin_metas(x["cambios"])
-    base = pr.aportes_primer_cobro(p)
-    nuevo = pr.aportes_primer_cobro(r)
-    for meta_id, cfg in x["cambios"].items():
-        m = metas.obtener(meta_id)
-        partes = []
-        if "aporte_fijo" in cfg:
-            partes.append(f"{euros_cortos(base.get(meta_id, 0))} → <b>{euros_cortos(nuevo.get(meta_id, cfg['aporte_fijo']))}</b> por cobro")
-        if "fecha_limite" in cfg:
-            partes.append(f"fecha {pr.mes_corto(date.fromisoformat(m['fecha_limite']))} → "
-                          f"<b>{pr.mes_corto(date.fromisoformat(cfg['fecha_limite']))}</b>")
-        antes = pr.mes_corto(fines_antes[meta_id]) if fines_antes.get(meta_id) else "nunca"
-        despues = pr.mes_corto(fines_despues[meta_id]) if fines_despues.get(meta_id) else "nunca"
-        lineas.append(f"• {e(m['nombre'])}: {' · '.join(partes)} (llegas en {despues}, antes {antes})")
-    lineas += ["", f"<b>Resultado:</b> {icono} {veredicto}",
-               f"Cobro más justo: {euros(p['peor']['libre'])} → <b>{euros(r['peor']['libre'])}</b>",
-               f"Dinero libre al final: {euros(p['final'])} → <b>{euros(r['final'])}</b>",
-               "", "<i>Si la aplicas, se cambian tus metas (se puede deshacer en 10 minutos).</i>"]
-    filas = [[("✅ Aplicar", f"pra:{clave}"), ("🙈 Ignorar", "pri")], [("⬅️ Ajustar", "pr:aju")]]
-    imagen = go.comparacion([("Ahora", p), (x["titulo"][2:].strip(), r)], pie(p), "Antes y después", x["explicacion"])
-    return "\n".join(lineas), [imagen], filas
+        return ("⚖️ Esta propuesta no se puede calcular ahora (puede que ya no haga falta, o que algo haya cambiado).",
+                [], botones_menu("aju"))
+    lineas = [f"<b>{x['titulo']}</b>", f"<i>{x['explicacion']}</i>"]
+    filas, comparar, lineas_grafico = [], [("Ahora", p)], []
+    varias = len(x["variantes"]) > 1
+    for n, v in enumerate(x["variantes"]):
+        recomendada = varias and v["codigo"] == x["recomendada"]
+        lineas += ["", f"<b>{'⭐ ' if recomendada else ''}{v['nombre']}{' (recomendada)' if recomendada else ''}</b>"]
+        if not v["posible"]:
+            lineas.append(f"✖️ No es posible: {e(v['motivo'])}" if v["motivo"] else "✖️ No es posible.")
+            continue
+        fines = pr.fin_metas(v["cambios"])
+        antes, nuevo = pr.aportes_primer_cobro(p), pr.aportes_primer_cobro(v["resultado"])
+        cambian = [i for i in v["cambios"] if i in antes and (abs(antes[i] - nuevo.get(i, 0.0)) >= 0.5
+                   or v["cambios"][i].get("fecha_limite", metas.obtener(i)["fecha_limite"]) != metas.obtener(i)["fecha_limite"])]
+        ids = list(dict.fromkeys(v["reducidas"] + cambian))
+        lineas += [describir_meta(p, v, i, fines) for i in ids]
+        icono, veredicto = pr.veredicto(v["resultado"])
+        lineas.append(f"{icono} {veredicto} · acabas con {euros(v['resultado']['final'])}")
+        filas.append([(f"✅ Aplicar: {'⭐ ' if recomendada else ''}{v['nombre']}", f"pra:{clave}:{v['codigo']}")])
+        comparar.append((v["corto"].capitalize(), v["resultado"]))
+        for color, meta_id in enumerate(v["reducidas"][:2]):
+            lineas_grafico.append((f"{metas.obtener(meta_id)['nombre'][:12]} · {v['corto']}", color,
+                                   "continua" if n == 0 else "discontinua",
+                                   [c["por_meta"].get(meta_id, (0.0, False))[0] for c in v["resultado"]["ciclos"]]))
+    lineas += ["", "<i>Si la aplicas, se cambian tus metas (se puede deshacer en 10 minutos) y los recordatorios piden "
+                   "la cuota de cada momento. O ignórala y lo dejo como está.</i>"]
+    filas.append([("🙈 Ignorar", "pri"), ("⬅️ Ajustar", "pr:aju")])
+    imagenes = []
+    if len(comparar) > 1:
+        imagenes.append(go.comparacion(comparar, pie(p), "Antes y después", "Lo libre en cada cobro con cada opción"))
+    if lineas_grafico:
+        imagenes.append(go.cuotas(lineas_grafico, [c["fecha"] for c in p["ciclos"]], pie(p),
+                                  "Cuota de tus metas, cobro a cobro",
+                                  "Baja mientras espera; después sube (recuperar) o vuelve a la normal (aplazar)"))
+    return "\n".join(lineas), imagenes, filas
+
+
+def orden(ids):
+    """Pantalla para elegir varias prioritarias en orden."""
+    p = pr.simular()
+    if not p:
+        return sin_salario()
+    candidatas = [m for m in p["metas"] if m["id"] in pr.aportes_primer_cobro(p)]
+    elegidas = [metas.obtener(i) for i in ids if metas.obtener(i)]
+    texto = ("🔢 <b>Prioridades en orden</b>\nPulsa tus metas de la más importante a la menos. Cada una espera a la "
+             "anterior; las que no pulses esperan a la última.\n\n"
+             + ("Orden: " + " → ".join(f"{n}.ª {e(m['nombre'])}" for n, m in enumerate(elegidas, 1)) if elegidas
+                else "Aún no has elegido ninguna."))
+    filas = [[(f"{len(elegidas) + 1}.ª: {m['nombre'][:20]}", f"pro:{m['id']}")] for m in candidatas if m["id"] not in ids]
+    if elegidas:
+        filas.append([("✅ Ver la propuesta", "pro:ok"), ("↩️ Empezar de nuevo", "pro:x")])
+    filas.append([("⬅️ Ajustar", "pr:aju")])
+    return texto, [], filas
+
+
+def libre():
+    minimo = pr.libre_minimo()
+    texto = ("💸 <b>¿Cuánto dinero quieres que te quede libre en cada cobro?</b>\n"
+             f"Ahora: {euros(minimo)}" + (" (todo el salario va a pagos y metas)" if not minimo else "") + ".\n"
+             "Las propuestas ajustan tus metas para dejarte al menos esto. Elige o escribe una cantidad.")
+    opciones = (0, 50, 100, 200, 300, 500)
+    filas = [[(("✅ " if abs(minimo - n) < 0.01 else "") + (f"{n} €" if n else "0 € (todo)"), f"pr:lib:{n}")
+              for n in opciones[i:i + 3]] for i in (0, 3)]
+    return texto, [], filas + [[("⬅️ Proyección", "pr:res")]]
 
 
 def pantalla_escenarios():
@@ -374,7 +500,7 @@ def salario():
 
 
 PANTALLAS = {"res": resumen, "mes": mes_a_mes, "cal": calendario, "met": pantalla_metas, "esc": pantalla_escenarios,
-             "hz": horizonte, "sal": salario}
+             "hz": horizonte, "sal": salario, "lib": libre}
 
 
 # =====================================================================
@@ -403,8 +529,14 @@ async def boton(update, context, partes):  # noqa: C901  (enrutador de botones d
     sim = context.user_data.setdefault("proy_sim", {})
     if clave == "pr":
         opcion = partes[1]
-        if opcion in ("hz", "sal") and len(partes) > 2:
+        if opcion in ("hz", "sal", "lib") and len(partes) > 2:
             context.user_data.pop("espera", None)  # eligió con un botón: ya no espera texto
+        if opcion == "lib" and len(partes) > 2:
+            config.guardar("LIBRE_MINIMO", partes[2])
+            await enviar(context, resumen)
+            return f"Libre mínimo: {partes[2]} €"
+        if opcion == "lib":
+            b.esperar(context, "proy_libre")
         if opcion == "hz" and len(partes) > 2:
             config.guardar("PROYECCION_HASTA", "" if partes[2] == "0" else partes[2])
             await enviar(context, resumen)
@@ -425,14 +557,34 @@ async def boton(update, context, partes):  # noqa: C901  (enrutador de botones d
     if clave == "prp":
         await enviar(context, propuesta, partes[1])
         return None
+    if clave == "prq":
+        await enviar(context, propuesta, f"Q{int(partes[1])}")
+        return None
+    if clave == "pro":
+        orden_ids = context.user_data.setdefault("proy_orden", [])
+        if partes[1] in ("ini", "x"):
+            orden_ids.clear()
+        elif partes[1] == "ok":
+            if not orden_ids:
+                return "Elige al menos una meta"
+            await enviar(context, propuesta, "Q" + "-".join(map(str, orden_ids)))
+            return None
+        elif int(partes[1]) not in orden_ids:
+            orden_ids.append(int(partes[1]))
+        await enviar(context, orden, list(orden_ids))
+        return None
     if clave == "pra":
-        p = await asyncio.to_thread(pr.simular)
-        x = next((x for x in await asyncio.to_thread(pr.propuestas, p) if x["clave"] == partes[1]), None)
-        if not x:
+        def calcular():
+            p = pr.simular()
+            x = pr.propuesta(p, partes[1]) if p else None
+            return x, (pr.variante(x, partes[2] if len(partes) > 2 else None) if x else None)
+        x, v = await asyncio.to_thread(calcular)
+        if not x or not v or not v["posible"]:
             return "Esa propuesta ya no aplica"
-        accion = pr.aplicar(x["cambios"], f"Propuesta «{x['titulo'][2:].strip()}»")
-        await b.enviar(context, f"✅ Aplicado: {e(x['titulo'])}. Tus metas ya piden las nuevas cantidades.",
-                       b.con_deshacer(accion, [[("📈 Ver proyección", "pr:res")]]))
+        accion = pr.aplicar(v["cambios"], f"Propuesta «{x['titulo'][2:].strip()}» ({v['nombre'][2:].strip()})")
+        await b.enviar(context, f"✅ Aplicado: {e(x['titulo'])} · {v['nombre']}.\nTus metas ya piden la cuota de cada "
+                                "momento; cuando cambie de tramo te lo pediré con la nueva cantidad.",
+                       b.con_deshacer(accion, [[("📈 Ver proyección", "pr:res"), ("🎯 Ver metas", "m:metas")]]))
         return "Aplicado"
     if clave == "pri":
         p = await asyncio.to_thread(pr.simular)
@@ -475,6 +627,15 @@ async def responder(update, context, espera, escrito):
             return True
         context.user_data.pop("espera", None)
         config.guardar("PROYECCION_HASTA", f"{final:%Y-%m}")
+        await enviar(context, resumen)
+        return True
+    if espera["paso"] == "proy_libre":
+        importe = 0.0 if escrito.strip() == "0" else leer_importe(escrito)
+        if importe is None:
+            await b.repetir(update, "Escribe una cantidad, por ejemplo <b>150</b> (o 0).")
+            return True
+        context.user_data.pop("espera", None)
+        config.guardar("LIBRE_MINIMO", round(importe, 2))
         await enviar(context, resumen)
         return True
     if espera["paso"] == "proy_salario":

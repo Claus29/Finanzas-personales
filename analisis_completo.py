@@ -643,7 +643,7 @@ def salud():
         valores = []
         for m in normales:
             estado = metas.progreso(m)["estado"]
-            valores.append(100 if estado[0] in "✅🟢" else (60 if estado[0] == "🟡" else 20))
+            valores.append(100 if estado[0] in "✅🟢" else (60 if estado[0] in "🟡⏸" else 20))
         tarde = sum(1 for v in valores if v < 100)
         componentes.append(("metas", sum(valores) / len(valores),
                             f"{len(normales) - tarde} de {len(normales)} metas van al día",

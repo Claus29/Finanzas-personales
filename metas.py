@@ -12,6 +12,11 @@ El recordatorio siempre pide esa cantidad (en la franja de recordatorios) y se r
 confirmes: «ya lo moví», «otra cantidad» o «este mes no». Nada se da por hecho.
 Cuándo empieza a recordar (recordar): «cobro» (el día del cobro), «cobro1» (el día después) o
 «dia:N» (el día N del mes).
+
+Tramos (v10): una meta puede aportar una cuota reducida (tramo_aporte; 0 = en pausa) mientras no se
+cumpla tramo_hasta: «meta:ID» (hasta conseguir otra meta prioritaria) o «fecha:AAAA-MM-DD» (hasta ese
+cobro). Después, según tramo_despues: «recuperar» (la cuota sube lo necesario para llegar a su fecha)
+o «aplazar» (vuelve a su cuota normal; su fecha ya se movió al aplicarlo). prioridad: 1, 2… (0 = ninguna).
 """
 import math
 from datetime import date, datetime, timedelta
@@ -88,8 +93,11 @@ def progreso(meta, d=None):
     transcurrido = min(1.0, max(0.0, (d - creada).days / duracion))
     inicial = min(meta["ahorrado"], objetivo)
     esperado = inicial + (objetivo - inicial) * transcurrido
+    espera = en_espera(meta, d) if meta["activa"] == ACTIVA else None
     if llevas >= objetivo:
         estado = "✅ ¡Conseguida!"
+    elif espera:
+        estado = f"⏸️ En espera {espera}"
     elif limite < d:
         estado = "🔴 Ha pasado la fecha"
     elif llevas >= esperado - 0.01:
@@ -108,17 +116,72 @@ def clave_ciclo(d=None):
     return ciclo.inicio(d or hoy()).isoformat()
 
 
+def _campo(meta, cfg, campo):
+    return cfg[campo] if cfg and campo in cfg else meta[campo]
+
+
+def tramo_activo(meta, fecha_cobro, pendientes, cfg=None):
+    """¿Aporta la cuota reducida en el cobro de fecha_cobro? pendientes: ids de metas aún sin conseguir."""
+    if _campo(meta, cfg, "tramo_aporte") < 0:
+        return False
+    hasta = _campo(meta, cfg, "tramo_hasta") or ""
+    if hasta.startswith("meta:"):
+        return int(hasta[5:]) in pendientes
+    if hasta.startswith("fecha:"):
+        return fecha_cobro < date.fromisoformat(hasta[6:])
+    return False
+
+
+def cuota(meta, ahorrado_ahora, fecha_cobro, pendientes, cfg=None):
+    """Aportación en el cobro de fecha_cobro con lo ahorrado hasta entonces (con tramos y cambios simulados)."""
+    falta = round(meta["objetivo"] - ahorrado_ahora, 2)
+    if falta <= 0.004:
+        return 0.0
+    if tramo_activo(meta, fecha_cobro, pendientes, cfg):
+        return round(min(max(0.0, _campo(meta, cfg, "tramo_aporte")), falta), 2)
+    limite = date.fromisoformat(_campo(meta, cfg, "fecha_limite"))
+    necesaria = falta / meses_hasta(limite, fecha_cobro)
+    fijo = _campo(meta, cfg, "aporte_fijo")
+    normal = min(fijo, falta) if _campo(meta, cfg, "aporte_modo") == "fija" and fijo > 0 else necesaria
+    if _campo(meta, cfg, "tramo_aporte") >= 0 and _campo(meta, cfg, "tramo_despues") == "recuperar":
+        normal = max(normal, necesaria)  # terminado el tramo, recupera para llegar a su fecha
+    return round(min(normal, falta), 2)
+
+
+def pendientes_ahora():
+    """Ids de las metas activas que aún no han llegado a su objetivo."""
+    return {m["id"] for m in activas() if ahorrado(m) < m["objetivo"] - 0.004}
+
+
 def aporte_previsto(meta, d=None):
-    """Lo que toca aportar en el ciclo actual (la cantidad fija o la necesaria al empezar el ciclo)."""
+    """Lo que toca aportar en el ciclo actual (cuota reducida si está en tramo, la fija o la necesaria)."""
     d = d or hoy()
     inicio = ciclo.inicio(d)
-    falta_al_empezar = max(0.0, meta["objetivo"] - ahorrado_en(meta, inicio - timedelta(days=1)))
-    if falta_al_empezar <= 0.004:
-        return 0.0
-    if meta["aporte_modo"] == "fija" and meta["aporte_fijo"] > 0:
-        return round(min(meta["aporte_fijo"], falta_al_empezar), 2)
-    limite = date.fromisoformat(meta["fecha_limite"])
-    return round(falta_al_empezar / meses_hasta(limite, inicio), 2)
+    return cuota(meta, ahorrado_en(meta, inicio - timedelta(days=1)), inicio, pendientes_ahora())
+
+
+def en_espera(meta, d=None):
+    """Texto corto si ahora aporta la cuota reducida de un tramo («hasta conseguir X»), o None."""
+    d = d or hoy()
+    if not tramo_activo(meta, ciclo.inicio(d), pendientes_ahora()):
+        return None
+    return describir_hasta(meta["tramo_hasta"])
+
+
+def describir_hasta(hasta):
+    if hasta.startswith("meta:"):
+        otra = obtener(int(hasta[5:]))
+        return f"hasta conseguir «{otra['nombre']}»" if otra else "hasta conseguir tu meta prioritaria"
+    if hasta.startswith("fecha:"):
+        from formato import MESES
+        fecha = date.fromisoformat(hasta[6:])
+        return f"hasta el cobro de {MESES[fecha.month - 1]} {fecha.year}"
+    return ""
+
+
+def quitar_tramo(meta_id):
+    datos.ejecutar("UPDATE metas SET tramo_aporte = -1, tramo_hasta = '', tramo_despues = '', prioridad = 0 "
+                   "WHERE id = ?", meta_id)
 
 
 def estado_ciclo(meta, d=None):
@@ -222,7 +285,8 @@ def crear(nombre, objetivo, fecha_limite, uid=None, ya_ahorrado=0.0, aporte_modo
 
 
 def configurar(meta_id, campo, valor):
-    if campo not in ("aporte_modo", "aporte_fijo", "recordar", "uid", "objetivo", "fecha_limite", "nombre"):
+    if campo not in ("aporte_modo", "aporte_fijo", "recordar", "uid", "objetivo", "fecha_limite", "nombre",
+                     "prioridad", "tramo_aporte", "tramo_hasta", "tramo_despues"):
         raise ValueError(campo)
     datos.ejecutar(f"UPDATE metas SET {campo} = ? WHERE id = ?", valor, meta_id)
     if campo == "uid" and valor:

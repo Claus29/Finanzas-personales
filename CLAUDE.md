@@ -5,7 +5,7 @@ Bot de Telegram de finanzas personales para Windows. El usuario NO programa: ins
 último `INSTALAR.bat` de la rama `claude/sweet-thompson-41bsdc` y lo ejecuta con `--actualizar`.
 Toda actualización debe funcionar con ese doble clic, sin que el usuario toque nada.
 
-## Funcionalidad (v5 → v9)
+## Funcionalidad (v5 → v10)
 
 - El banco se consulta UNA vez al día (`actualizacion.py`, hora `HORA_SALDO_DIARIO`, 00:00 por
   defecto) o con «🔄 Actualizar ahora» (Ajustes, con confirmación). Descarga saldos y movimientos
@@ -70,6 +70,16 @@ Toda actualización debe funcionar con ese doble clic, sin que el usuario toque 
   confirmación y deshacer, o se ignoran (`proy_ignorar:{firma}`). Avisa tras crear una deuda o meta si deja de ser
   sostenible, y añade una línea al plan «¡Cobrado!». Gráficos de Proyección en tema oscuro (`graficos_oscuro.py`,
   superficie #1a1a19, plano #0d0d0d, series #3987e5/#d95926/#199e70/#c98500 validadas); el resto sigue en claro.
+- v10 · Tramos de metas (`metas.cuota`, columnas `prioridad`, `tramo_aporte` (−1 = sin tramo; 0 = pausa),
+  `tramo_hasta` («meta:ID» o «fecha:AAAA-MM-DD»), `tramo_despues` («recuperar» | «aplazar»)). Mientras no se cumple
+  `tramo_hasta`, la meta aporta la cuota reducida; después, «recuperar» = max(su cuota, la necesaria para su fecha) y
+  «aplazar» = su cuota normal (la fecha se movió al aplicar). Los recordatorios, el plan y la simulación usan la
+  misma función. NUNCA se deja un recorte permanente: priorizar/recortar crean tramos. `LIBRE_MINIMO` (0 por
+  defecto) = libre que el usuario quiere en cada cobro: 🟡 si queda menos, y las propuestas lo respetan.
+  Propuestas con variantes y una ⭐ recomendada (recuperar si cumple, si no aplazar): 🥇 Priorizar (una o varias
+  en orden; `prq:`, `pro:`), ✂️ Recortar (menos / nada, hasta un cobro, luego aplazar), 📅 Alargar, 🚀 Acelerar
+  (todo lo que sobra por encima del libre mínimo). Aplicar `pra:CLAVE:VARIANTE`, con deshacer; o ignorar.
+  Aviso único al actualizar (`v10_metas_tarde`) para metas con cuota fija antigua que ya no llegan.
 - El banco solo se consulta en: actualización diaria, su recuperación si el PC estaba apagado,
   «Actualizar ahora» y tras renovar el permiso (si ese día no había datos). El usuario pidió dejarlo así.
 
@@ -90,7 +100,7 @@ Toda actualización debe funcionar con ese doble clic, sin que el usuario toque 
   `LIMITE_CONSULTAS_DIA`, `HORA_SALDO_DIARIO`, `SALDO_DIARIO_ACTIVO`, `DIA_COBRO_DESDE`, `DIA_COBRO_HASTA`,
   `PRESUPUESTO_CICLO`, `UMBRAL_SALDO_BAJO`, `HORA_AVISO_PAGO`, `FRANJA_DEUDAS_DESDE`, `FRANJA_DEUDAS_HASTA`,
   `DIAS_AVISO_SIN_DIA`, `COLCHON_ACTIVO`, `COLCHON_MESES`, `SALARIO_ESTIMADO`, `PROYECCION_HASTA`,
-  `AVISO_*`).
+  `LIBRE_MINIMO`, `AVISO_*`).
   Una clave nueva debe tener valor por defecto (`config.POR_DEFECTO`) o pedirse solo si falta.
 - La actualización copia los archivos del repositorio encima de `%LOCALAPPDATA%\FinanzasBot` con
   robocopy y borra una lista fija de archivos obsoletos (en `INSTALAR.bat`). Los archivos que genera
