@@ -78,14 +78,9 @@ def texto_primera(espera):
 # =====================================================================
 
 async def pantalla(update, context, nuevo=False):
-    b = _b()
-    filas = [[("➕ Nueva", "d:nueva"), ("✅ Marcar pagado", "d:pagar")]]
-    lista = deudas.activas()
-    for n in range(0, len(lista), 2):
-        filas.append([(f"{'🤝' if deudas.me_deben(d) else deudas.TIPOS[d['tipo']].split(' ')[0]} {d['nombre'][:18]}",
-                       f"d:ver:{d['id']}") for d in lista[n:n + 2]])
-    filas.append([("📊 Análisis de deudas", "ad:res")])
-    await b.mostrar(update, context, analisis.texto_deudas(), filas, nuevo)
+    """💳 Deudas (v13): cuánto debes, qué toca antes del cobro y con el cobro, y cada deuda en una línea."""
+    import vistas
+    await _b().mostrar(update, context, *vistas.deudas_pantalla(), nuevo=nuevo)
 
 
 async def ver(update, context, deuda_id, nuevo=False):
@@ -129,8 +124,9 @@ async def ver(update, context, deuda_id, nuevo=False):
     if deuda["tipo"] in deudas.MENSUALES and deudas.modo(deuda) == "dia":
         campos.append(("✏️ Día", "dia"))
     filas.append([(t, f"de:{deuda_id}:{c}") for t, c in campos] + [("✏️ Nombre", f"de:{deuda_id}:nombre")])
-    filas.append([("🗑️ Borrar", f"dbo:{deuda_id}"), ("⬅️ Deudas", "m:deudas")])
-    await b.mostrar(update, context, analisis.texto_deuda(deuda), filas, nuevo)
+    filas.append([("📊 Detalles", f"d:det:{deuda_id}"), ("🗑️ Borrar", f"dbo:{deuda_id}"), ("⬅️ Deudas", "m:deudas")])
+    import vistas
+    await b.mostrar(update, context, vistas.ficha_deuda(deuda), filas, nuevo)
 
 
 # =====================================================================
@@ -360,7 +356,7 @@ async def responder(update, context, espera, escrito):
         filas = [[("👀 Ver", f"d:ver:{deuda_id}")]]
         vence = deudas.vencimiento(deudas.obtener(deuda_id), per)
         if vence < ciclo.proximo_cobro():
-            texto += (f".\n📌 Cae antes de tu cobro, así que <b>se resta ya</b> de tu saldo neto. "
+            texto += (".\n📌 Cae antes de tu cobro, así que <b>se resta ya</b> de tu saldo neto. "
                       "Si prefieres pagarla en cuanto cobres, pulsa 💶")
             filas.insert(0, [("💶 Esa cuota, con el próximo cobro", f"dcb:{deuda_id}:{per}")])
         await b.enviar(context, f"🔁 {analisis.e(deudas.obtener(deuda_id)['nombre'])}: {texto}.",
@@ -442,6 +438,10 @@ async def boton(update, context, partes):  # noqa: C901  (enrutador de botones d
                             [[(deudas.TIPOS[t], f"dn:{t}:{sentido}")] for t in tipos] + [b.CANCELAR])
         elif partes[1] == "ver":
             await ver(update, context, int(partes[2]))
+        elif partes[1] == "det":  # 📊 Detalles: la ficha completa de antes (historial, aplazamientos, saltos…)
+            deuda = deudas.obtener(int(partes[2]))
+            if deuda:
+                await b.mostrar(update, context, analisis.texto_deuda(deuda), [[("⬅️ Volver", f"d:ver:{deuda['id']}")]])
         elif partes[1] == "pagar":
             items = deudas.pendientes() + deudas.por_cobrar()
             filas = [[(f"{'🤝 ' if deudas.me_deben(i['deuda']) else ''}{i['deuda']['nombre'][:18]} "

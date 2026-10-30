@@ -53,11 +53,18 @@ def texto_actualizado():
     return f"Actualizado {cuando} a las {momento:%H:%M}"
 
 
-def dinero_libre(neto, d=None):
-    """Saldo neto − dinero que ya está en las cuentas de tus metas − lo que falta apartar este ciclo."""
+def libre_sin_metas(neto):
+    """Saldo neto − dinero que ya está en las cuentas de tus metas (antes de apartar lo de este ciclo)."""
     import colchon
+    return round(neto - colchon.dinero_en_metas(), 2)
+
+
+def dinero_libre(neto, d=None):
+    """Libre sin metas − lo que falta apartar este ciclo, pero solo lo que supere tu libre (LIBRE_MINIMO):
+    si falta dinero, las metas ceden primero (v13)."""
+    libre = libre_sin_metas(neto)
     reservar = sum(metas.pendiente_ciclo(m, d) for m in metas.activas())
-    return round(neto - colchon.dinero_en_metas() - reservar, 2)
+    return round(libre - min(reservar, max(0.0, libre - config.importe("LIBRE_MINIMO"))), 2)
 
 
 def puedes_gastar(neto, d=None):

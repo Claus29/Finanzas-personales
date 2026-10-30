@@ -98,16 +98,15 @@ def fijar_ciclo(fecha_salario, importe, hueco=0.0):
 
 
 def hueco_antes_de_cobrar(importe, ya_en_saldo):
-    """Lo que faltaba antes de este cobro (dinero libre sin metas en negativo). Si el banco ya trajo el salario,
-    se descuenta para no contarlo dos veces."""
+    """Lo que faltaba antes de este cobro: el dinero de tus cuentas (sin el de las metas) en negativo.
+
+    Los pagos que siguen sin marcar NO entran aquí: siguen pendientes y van en los pagos del ciclo nuevo
+    (contarlos también aquí los restaría dos veces). Si el banco ya trajo el salario, se descuenta."""
     import analisis
-    import deudas
-    import metas
     s = analisis.saldo_actual()
     if not s:
         return 0.0
-    neto, _ = deudas.neto(s["total"])
-    libre = analisis.dinero_libre(neto) + sum(metas.pendiente_ciclo(m) for m in metas.activas())
+    libre = analisis.libre_sin_metas(s["total"])
     if ya_en_saldo:
         libre -= importe
     return round(max(0.0, -libre), 2)
@@ -132,7 +131,7 @@ def fijar_ciclo_actual():
     if not s:
         return None
     neto, pendientes = deudas.neto(s["total"])
-    libre_sin_metas = analisis.dinero_libre(neto) + sum(metas.pendiente_ciclo(m) for m in metas.activas())
+    libre_sin_metas = analisis.libre_sin_metas(neto)
     libre = libre_minimo()
     estado = [(m, metas.ahorrado(m)) for m in metas.activas() if not metas.estado_ciclo(m)]
     asignado, sobra = repartir(libre_sin_metas - libre, estado, ciclo.inicio())

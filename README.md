@@ -7,19 +7,22 @@ lectura vía Enable Banking (PSD2/AIS). Solo te habla a ti.
 saldos y movimientos de todas tus cuentas. Todo lo demás se calcula al momento con esos datos,
 así que pulsar botones nunca gasta consultas. Tu saldo es la suma de tus cuentas.
 
+Tu dinero, siempre en el mismo orden: **1️⃣ pagos** (deudas, cuotas, gastos fijos y suscripciones: no se mueven)
+→ **2️⃣ tu libre** (la cantidad que eliges) → **3️⃣ metas** (solo lo que sobra). Si a mitad de mes falta dinero,
+las metas ceden primero.
+
 | Botón | Qué hace |
 |---|---|
-| 📈 **Proyección** | Cómo se reparte tu salario en cada cobro hasta el mes que elijas (fijos, suscripciones, cuotas, pagos únicos, metas y lo que te devuelven) y **cuánto te queda libre**: resumen con veredicto 🟢🟡🔴, mes a mes, calendario (cuándo terminas cada deuda y consigues cada meta), metas, «¿y si…?» y **⚖️ Ajustar**: eliges qué meta priorizar (o varias en orden); las demás aportan menos o nada **solo mientras tanto** y después **recuperan** (suben para llegar a su fecha) o se **aplazan** (cuota normal, fecha más tarde). Ves las dos opciones, el bot recomienda una y tú la aplicas o la ignoras. También: recortar (menos o nada hasta que quepa), alargar fechas, acelerar y un simulador. Eliges cuánto dinero quieres que te quede libre en cada cobro (o 0 €) y, con el **🔀 reparto automático**, todo lo demás que no va a pagos se reparte entre tus metas en cada cobro (lo necesario para cada fecha y el resto a la prioritaria, o en cascada). Salario: el último cobrado o uno estimado. Gráficos en negro. |
-| 💰 **Saldo** | Total y desglose por cuenta, **saldo neto** (saldo − lo que tienes que pagar **antes de tu próximo cobro**; de las deudas a plazos solo esa cuota), aparte lo que va **con tu cobro** (no se resta aún) y cuánto puedes gastar al día hasta el cobro. En cada pago: ✅ ya pagado o 💶 lo pago con el cobro. Registrar cobro. Últimos movimientos. |
-| 📊 **Análisis** | **🧭 Análisis completo** (Ahora, Por meses por ciclos de cobro, Anual, Flujo de caja en cascada, Metas, Salud financiera 0–100 y Trayectoria a 6 y 12 meses), cada pantalla con su gráfico y explicada. Además: ciclo actual (ingresos, gasto, proyección, tasa de ahorro, comparación), presupuesto con semáforo, categorías (gráfico), evolución del saldo (gráfico), semana, suscripciones detectadas (apúntalas con un toque) y corregir categorías. |
-| 💳 **Deudas** | **Lo que debes** (pago único con fecha, pago único al cobrar, a plazos, gasto fijo, suscripción) y **lo que te deben** (con día de pago, a plazos o sin fecha). A plazos: pones el **total** y la cuota (o el nº de cuotas) y lo ya pagado; cada cuota un día fijo, **al cobrar** o (si te deben) sin día fijo. Al apuntarla te dice cuándo es la 1.ª cuota y si se resta ya del saldo neto (si cae antes de tu cobro eliges: este ciclo, en cuanto cobres o el mes que viene); cualquier cuota se puede pagar **con el próximo cobro** (todo el plan se mueve un mes, nunca dos cuotas en un cobro) y cada deuda puede cambiar entre día fijo y «en cuanto cobro». «Otra cantidad» recalcula las cuotas. Si una cuota no se paga: pasarla al mes siguiente o pagar las dos juntas (nunca cuenta como pagada). Recordatorios entre las 08:00 y las 14:00 que piden confirmación y se repiten hasta que la des. Lo que te deben no se suma al saldo neto. **Análisis de deudas** con % del salario comprometido, libre de deudas en…, calendario, puntualidad y gráfico. |
-| 🎯 **Metas** | Metas de ahorro en **su propia cuenta** (un Espacio de N26) o manuales. En cada cobro te dice cuánto mover y a qué cuenta (la cantidad necesaria o una fija) y te lo recuerda cada día hasta que confirmes («ya lo moví», «otra cantidad» o «este mes no»). Si ve que la cuenta sube, pregunta si es tu aportación; al llegar al objetivo, pregunta si la da por conseguida. El bot **nunca mueve dinero**. |
-| ⏰ **Recordatorios** | El del cobro insiste hasta que registres el salario (y propone la nómina si la ve en el banco). Recordatorios propios: una vez, diario, semanal o mensual. |
-| ⚙️ **Ajustes** | Límite de consultas, hora de actualización, días de cobro, presupuesto, aviso de saldo bajo, 🛟 colchón de emergencia (desactivado por defecto), avisos on/off, «Actualizar ahora», exportar a Excel. |
+| 🏠 **Inicio** | Lo esencial de hoy: lo que hay en el banco, los pagos de antes del cobro (✅ ya pagado / 💶 con el cobro), lo guardado en tus metas y **tu libre** hasta el cobro (y cuánto sería si te pagan lo que te deben). |
+| 💳 **Deudas** | **Cuánto debes en total** y cuándo terminas, qué pagas antes del cobro y qué con el cobro, cada deuda en una línea, los gastos fijos aparte y lo que te deben. Apuntar (pago único, al cobrar, a plazos, gasto fijo, suscripción; o lo que te deben), marcar pagado, «💶 con el cobro» (todo el plan se mueve), cambiar entre día fijo y «en cuanto cobro». Ficha corta de cada deuda y «📊 Detalles» con todo lo de antes. Recordatorios entre las 08:00 y las 14:00 que piden confirmación. |
+| 🎯 **Metas** | En orden de prioridad: cuánto llevas, **cuándo llegas** (con lo que sobra de cada cobro) y qué mover este ciclo y a qué cuenta. El bot nunca mueve dinero: te lo recuerda hasta que lo confirmes. |
+| 📈 **Próximos meses** | Una tabla cobro a cobro (entra, deudas, fijos, tu libre, metas), la conclusión (🟢 cuadra / 🟡 / 🔴 no llega), cuándo terminas las deudas y cuándo llega cada meta. Lo que te deben va aparte. Soluciones si no cuadra y la proyección detallada de antes en «📊 Más detalles». |
+| 📊 **Gráfico** | En cada pantalla, bajo demanda: gráficos detallados en tema oscuro (cascada de tu dinero hasta el cobro, pagos, deudas deuda a deuda, pagos por cobro, metas y su evolución, reparto de cada cobro y deuda frente a metas), con fuente y supuestos. |
+| ☰ **Más** | Recordatorios, Ajustes, Registrar cobro, Movimientos, Exportar a Excel, Actualizar ahora y **📊 Más datos**: todo lo avanzado (saldo por cuenta y saldo neto, 🧭 análisis completo con índice de salud, ciclo, presupuesto, categorías, evolución, proyección detallada con propuestas y análisis de deudas). |
 
 El «mes» del presupuesto es el **ciclo de cobro**: empieza el día en que cobras y dura hasta el
 siguiente cobro (por defecto se espera entre el día 3 y el 7). Al registrar el cobro llega el
-**plan completo**: gastos fijos, cuotas, lo que mover a cada meta y lo que te queda para gastar al día.
+**plan en tres pasos**: 1️⃣ pagos, 2️⃣ tu libre y 3️⃣ lo que mover a cada meta (y «📋 Plan detallado»).
 
 ## Instalación en Windows (un clic)
 
@@ -54,6 +57,7 @@ recordatorios), con una copia de seguridad diaria en `copias\` (14 días), y el 
 | `bot_deudas.py`, `analisis_deudas.py` | Interfaz y análisis de deudas |
 | `bot_metas.py`, `colchon.py` | Interfaz de metas y colchón de emergencia |
 | `reparto.py` | Reparto automático: tu libre fijo y todo lo que sobra a tus metas |
+| `resumen.py`, `vistas.py`, `graficos_resumen.py` | Pantallas sencillas (v13): el cálculo único (pagos → libre → metas), sus textos y sus gráficos |
 | `proyeccion.py`, `bot_proyeccion.py`, `graficos_oscuro.py` | Proyección cobro a cobro, su interfaz y sus gráficos (tema oscuro) |
 | `avisos.py` | Recordatorios y avisos (nunca a las 00:00) |
 | `datos.py`, `exportar.py` | Base de datos local, copias y Excel |

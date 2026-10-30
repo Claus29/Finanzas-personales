@@ -5,7 +5,7 @@ Bot de Telegram de finanzas personales para Windows. El usuario NO programa: ins
 último `INSTALAR.bat` de la rama `claude/sweet-thompson-41bsdc` y lo ejecuta con `--actualizar`.
 Toda actualización debe funcionar con ese doble clic, sin que el usuario toque nada.
 
-## Funcionalidad (v5 → v12)
+## Funcionalidad (v5 → v13)
 
 - El banco se consulta UNA vez al día (`actualizacion.py`, hora `HORA_SALDO_DIARIO`, 00:00 por
   defecto) o con «🔄 Actualizar ahora» (Ajustes, con confirmación). Descarga saldos y movimientos
@@ -17,7 +17,8 @@ Toda actualización debe funcionar con ese doble clic, sin que el usuario toque 
   desde que se registra el salario; «me deben» nunca.
 - Ciclo = del último salario registrado al siguiente (`ciclo.py`); cobro esperado entre
   `DIA_COBRO_DESDE` y `DIA_COBRO_HASTA` (3–7). El recordatorio del cobro insiste hasta registrarlo.
-- Teclado: Saldo, Proyección / Análisis, Deudas / Metas, Recordatorios / Ajustes (`bot.py`). Pasos guiados con
+- Teclado (v13): Inicio / Deudas, Metas / Próximos meses, Más (`bot.py`; los textos de teclados anteriores siguen
+  funcionando vía `BOTONES_VIEJOS`). Pasos guiados con
   `context.user_data["espera"]`; botones con prefijos en `callback_data` (máx. 64 bytes: usar ids
   numéricos, p. ej. `rowid` de movimientos).
 - Datos del usuario en `datos.db` (SQLite, `datos.py`), copia diaria en `copias/`. El esquema solo
@@ -99,6 +100,18 @@ Toda actualización debe funcionar con ese doble clic, sin que el usuario toque 
   (botón `dmo:`) cambia día fijo ↔ «en cuanto cobro». Aviso único al actualizar (`v12_deudas_al_cobrar`, `dpx:`)
   para «al cobrar» enlazadas a un cobro ya cobrado antes de apuntarlas. Cuotas con el cobro: sin aviso previo, van
   en «¡Cobrado!». Proyección: «Tu libre» aparte y lo que sobra con metas completas en otra línea.
+- v13 · Rediseño de lo que se ve (la lógica no cambia): pantallas sencillas en `vistas.py` con un cálculo único en
+  `resumen.py` y gráficos bajo demanda en `graficos_resumen.py` (botón `v:g:inicio|deudas|metas|prox`; oscuros;
+  fijos violeta #9085e9, deudas naranja, tu libre azul, metas aqua, validados; pie con fuente y supuestos). Orden del
+  dinero: 1️⃣ pagos (inamovibles) → 2️⃣ tu libre (`LIBRE_MINIMO`) → 3️⃣ metas (lo que sobra). Si falta dinero a mitad
+  de ciclo las metas ceden primero: `analisis.dinero_libre`, `proyeccion.simular` y `resumen.ahora` solo apartan para
+  metas lo que supere tu libre; el recordatorio de la meta lo dice. Fijos y suscripciones se pagan primero pero no
+  son «deuda» (se muestran aparte). Lo que te deben no se suma en ninguna pantalla sencilla (en Próximos meses va en
+  una línea aparte; `simular(contar_deben=False)`). Sin €/día ni desglose por cuenta en Inicio. Todo lo avanzado de
+  antes sigue en ☰ Más › 📊 Más datos (`v:datos`) y en «📊 Detalles» de cada ficha (`d:det:ID`, `g:det:ID`).
+  «¡Cobrado!» en tres pasos (`vistas.texto_cobrado`; el de antes en «📋 Plan detallado», `v:plan`). El «hueco» al
+  cobrar (`reparto.hueco_antes_de_cobrar`) es solo el saldo sin metas en negativo: los pagos sin marcar ya van en los
+  pagos del ciclo nuevo (antes se restaban dos veces).
 - El banco solo se consulta en: actualización diaria, su recuperación si el PC estaba apagado,
   «Actualizar ahora» y tras renovar el permiso (si ese día no había datos). El usuario pidió dejarlo así.
 

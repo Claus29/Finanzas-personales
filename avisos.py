@@ -242,13 +242,22 @@ def _candidatos_metas(d, ahora):
     """Recordatorio de mover/apartar la aportación de cada meta, cada día desde su día hasta confirmarla."""
     lista = []
     nombres = {c["uid"]: consultas.nombre_cuenta(c) for c in consultas.cuentas()}
+    posible = None
     for meta in metas.activas():
         pendiente = metas.pendiente_ciclo(meta, d)
         inicio = metas.inicio_recordatorio(meta, d)
         if pendiente <= 0 or not inicio or d < inicio or pospuesto(f"meta:{meta['id']}", ahora):
             continue
-        lista.append((2, f"meta:{meta['id']}:{metas.clave_ciclo(d)}:{d}", texto_meta(meta, pendiente, inicio, d, nombres),
-                      botones_meta(meta, pendiente)))
+        if posible is None:  # v13: lo que se puede mover hoy sin tocar tu libre (las metas ceden primero)
+            import resumen
+            a = resumen.ahora()
+            posible = {m["id"]: parte for m, _, parte in a["metas"]} if a else {}
+        texto = texto_meta(meta, pendiente, inicio, d, nombres)
+        parte = posible.get(meta["id"], pendiente)
+        if parte < pendiente - 0.004:
+            texto += (f"\n⚠️ Ahora solo hay <b>{euros(parte)}</b> para esta meta sin tocar tu libre: mueve eso "
+                      "(💸 Otra cantidad) o espera a tener más.")
+        lista.append((2, f"meta:{meta['id']}:{metas.clave_ciclo(d)}:{d}", texto, botones_meta(meta, pendiente)))
     return lista
 
 

@@ -9,6 +9,7 @@ mt:ok:{id}[:{importe}] ya lo moví · mt:otra:{id} otra cantidad · mt:no:{id} e
 mt:ig:{id} ignorar hasta mañana · mt:fin:{id} dar por conseguida · mt:lista aportaciones pendientes.
 Los de versiones anteriores (g:, gs:, ma:, mo:) siguen funcionando.
 """
+import asyncio
 import logging
 from datetime import date, datetime, time, timedelta
 
@@ -46,13 +47,10 @@ def e(texto):
 # =====================================================================
 
 async def pantalla(update, context, nuevo=False):
-    b = _b()
-    filas = [[("➕ Nueva meta", "g:nueva")]]
-    lista = metas.activas()
-    filas += [[(f"{'🛟' if m['especial'] == 'colchon' else '🎯'} {m['nombre'][:25]}", f"g:ver:{m['id']}")] for m in lista]
-    if any(metas.pendiente_ciclo(m) > 0 for m in lista):
-        filas.append([("💶 Aportaciones de este ciclo", "mt:lista")])
-    await b.mostrar(update, context, analisis.texto_metas(), filas, nuevo)
+    """🎯 Metas (v13): en orden de prioridad, cuánto llevas, cuándo llegas y lo de este ciclo."""
+    import vistas
+    texto, filas = await asyncio.to_thread(vistas.metas_pantalla)
+    await _b().mostrar(update, context, texto, filas, nuevo)
 
 
 def filas_ficha(meta):
@@ -82,7 +80,11 @@ async def ver(update, context, meta_id, nuevo=False):
     meta = metas.obtener(meta_id)
     if not meta or meta["activa"] < 0:
         return "Esa meta ya no existe"
-    await _b().mostrar(update, context, analisis.texto_meta(meta), filas_ficha(meta), nuevo)
+    import vistas
+    texto = await asyncio.to_thread(vistas.ficha_meta, meta)
+    filas = filas_ficha(meta)
+    filas.insert(-1, [("📊 Detalles", f"g:det:{meta['id']}")])
+    await _b().mostrar(update, context, texto, filas, nuevo)
     return None
 
 
@@ -317,6 +319,10 @@ async def boton(update, context, partes):  # noqa: C901  (enrutador de botones d
             await b.mostrar(update, context, "🎯 ¿Cómo se llama tu meta? (ej. <b>Viaje a Japón</b>)", [b.CANCELAR], nuevo=True)
         elif partes[1] == "ver":
             return await ver(update, context, int(partes[2]))
+        elif partes[1] == "det":  # 📊 Detalles: la ficha completa de antes (ritmo real, aportación, recordatorio…)
+            meta = metas.obtener(int(partes[2]))
+            if meta:
+                await b.mostrar(update, context, analisis.texto_meta(meta), [[("⬅️ Volver", f"g:ver:{meta['id']}")]])
         elif partes[1] in ("ap", "re"):
             b.esperar(context, "meta_aportar" if partes[1] == "ap" else "meta_retirar", meta=int(partes[2]))
             await b.mostrar(update, context, f"¿Cuánto {'aportas' if partes[1] == 'ap' else 'retiras'}?", [b.CANCELAR], nuevo=True)

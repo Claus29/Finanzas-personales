@@ -282,13 +282,14 @@ def simular(cambios=None, salario=None, extra_salario=0.0, contar_deben=True, si
 
     def base_hoy():
         s = analisis.saldo_actual()
-        libre = analisis.dinero_libre(deudas.neto(s["total"])[0]) if s else 0.0
-        return libre + sum(metas.pendiente_ciclo(m) for m in metas.activas()), \
+        return analisis.libre_sin_metas(deudas.neto(s["total"])[0]) if s else 0.0, \
             round(sum(i["importe"] for i in deudas.por_cobrar()), 2)
     libre_hoy, deben = _cacheado("hoy", base_hoy)
     sin_metas_hoy = round(libre_hoy + (deben if contar_deben else 0.0), 2)  # para el «hueco»: lo que falta de verdad
-    # El dinero libre de hoy ya descuenta lo que falta apartar este ciclo; con cambios simulados se recalcula.
-    libre_hoy -= sum(pendiente_hoy(m, cambios.get(m["id"], {})) for m in lista_metas)
+    # Lo que falta apartar este ciclo para las metas sale solo de lo que supere tu libre (v13: las metas ceden
+    # primero; nunca dejan tu libre por debajo de LIBRE_MINIMO ni hacen un agujero). Con cambios se recalcula.
+    pendiente = sum(pendiente_hoy(m, cambios.get(m["id"], {})) for m in lista_metas)
+    libre_hoy -= min(pendiente, max(0.0, libre_hoy - minimo))
     libre_hoy = round(libre_hoy, 2)
     deben_hoy = deben if contar_deben else 0.0
     puente = round(libre_hoy + deben_hoy, 2)

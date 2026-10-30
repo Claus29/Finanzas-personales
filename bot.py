@@ -30,6 +30,7 @@ import bot_proyeccion
 import ciclo
 import colchon
 import reparto
+import vistas
 import config
 import consultas
 import contador
@@ -44,28 +45,28 @@ from formato import (DIAS_SEMANA, euros, euros_cortos, leer_entero, leer_fecha, 
 from movimientos import CATEGORIAS
 
 # Súbelo y cambia NOVEDADES en cada actualización con cambios visibles: el bot las anuncia una vez.
-VERSION = 12
-NOVEDADES = ("✨ <b>Bot actualizado: versión 12</b>\n\n"
-             "• 🧮 <b>Saldo neto</b>: solo resta lo que tienes que pagar <b>antes de tu próximo cobro</b>. Debajo, aparte, "
-             "lo que va <b>con tu cobro</b> (no se resta aún). Cada pago tiene ✅ (ya pagado) y 💶 (lo pago con el cobro).\n"
-             "• 💶 <b>La pago con el cobro</b>: en cualquier cuota (saldo neto, ficha o recordatorio). Deja de restarse "
-             "ahora, te la recuerdo con el cobro y todo el plan se mueve un mes: nunca dos cuotas en el mismo cobro.\n"
-             "• 📌 <b>Al apuntar una deuda</b> te digo cuándo es la 1.ª cuota y si se resta ya. Si cae antes de tu "
-             "cobro, eliges: este ciclo, en cuanto cobres o el mes que viene.\n"
-             "• 🔁 En cada deuda: <b>Cambiar cuándo se paga</b> (📅 día fijo ↔ 💶 en cuanto cobro) y la línea "
-             "«En tu saldo neto ahora: sí/no».\n"
-             "• 📈 Proyección más clara: los pagos de antes del cobro, <b>tu libre</b> siempre aparte y, si tus metas "
-             "están completas, lo que sobra en otra línea.\n"
-             "• 🔧 Arreglado: una deuda «al cobrar» apuntada después de cobrar ya no se resta ni se cuenta dos veces.")
+VERSION = 13
+NOVEDADES = ("✨ <b>Bot actualizado: versión 13 · más sencillo</b>\n\n"
+             "Tu dinero, siempre en el mismo orden: <b>1️⃣ pagos</b> (no se mueven) → <b>2️⃣ tu libre</b> → "
+             "<b>3️⃣ metas</b> (solo lo que sobra). Si a mitad de mes falta dinero, las metas ceden primero.\n\n"
+             "• 🏠 <b>Inicio</b>: lo que tienes, lo que pagas antes del cobro y tu libre. Nada más.\n"
+             "• 💳 <b>Deudas</b>: cuánto debes en total, cuándo terminas y qué pagas antes y con el cobro.\n"
+             "• 🎯 <b>Metas</b>: cuánto llevas, cuándo llegas y qué mover este ciclo.\n"
+             "• 📈 <b>Próximos meses</b>: una tabla cobro a cobro y la conclusión.\n"
+             "• 📊 <b>Gráfico</b> en cada pantalla, cuando lo pidas.\n"
+             "• ☰ <b>Más</b>: recordatorios, ajustes y 📊 <b>Más datos</b> (todo lo avanzado de antes, sin borrar nada).\n\n"
+             "Recordatorios, conexión con el banco y tus datos siguen igual.")
 VERSION_ANUNCIADA = config.BASE / "version_anunciada.txt"
 
-B_SALDO, B_ANALISIS, B_DEUDAS, B_METAS, B_RECORDATORIOS, B_AJUSTES, B_PROYECCION = (
-    "💰 Saldo", "📊 Análisis", "💳 Deudas", "🎯 Metas", "⏰ Recordatorios", "⚙️ Ajustes", "📈 Proyección")
-BOTONES_VIEJOS = {"💰 Ver saldo": B_SALDO}  # teclados de versiones anteriores que aún tenga el móvil
-TECLADO = ReplyKeyboardMarkup([[KeyboardButton(B_SALDO), KeyboardButton(B_PROYECCION)],
-                               [KeyboardButton(B_ANALISIS), KeyboardButton(B_DEUDAS)],
-                               [KeyboardButton(B_METAS), KeyboardButton(B_RECORDATORIOS)],
-                               [KeyboardButton(B_AJUSTES)]],
+# v13: teclado sencillo. Los textos de teclados anteriores siguen funcionando (BOTONES_VIEJOS).
+B_INICIO, B_DEUDAS, B_METAS, B_PROXIMOS, B_MAS = "🏠 Inicio", "💳 Deudas", "🎯 Metas", "📈 Próximos meses", "☰ Más"
+B_SALDO, B_ANALISIS, B_RECORDATORIOS, B_AJUSTES, B_PROYECCION = (
+    "💰 Saldo", "📊 Análisis", "⏰ Recordatorios", "⚙️ Ajustes", "📈 Proyección")
+BOTONES_VIEJOS = {"💰 Ver saldo": B_INICIO, B_SALDO: B_INICIO, B_PROYECCION: B_PROXIMOS}
+BOTONES = (B_INICIO, B_DEUDAS, B_METAS, B_PROXIMOS, B_MAS, B_ANALISIS, B_RECORDATORIOS, B_AJUSTES)
+TECLADO = ReplyKeyboardMarkup([[KeyboardButton(B_INICIO)],
+                               [KeyboardButton(B_DEUDAS), KeyboardButton(B_METAS)],
+                               [KeyboardButton(B_PROXIMOS), KeyboardButton(B_MAS)]],
                               resize_keyboard=True, is_persistent=True)
 AVISOS_CONFIGURABLES = [
     ("AVISO_DEUDAS", "💳 Lo que debes (deudas, cuotas, fijos, suscripciones)"),
@@ -190,7 +191,7 @@ def con_deshacer(accion_id, filas=None):
 async def pantalla_saldo(update, context, nuevo=False):
     await mostrar(update, context, analisis.texto_saldo(),
                   [[("🧮 Saldo neto", "m:neto"), ("💶 Registrar cobro", "cobro:nuevo")],
-                   [("🧾 Movimientos", "m:movs"), ("📈 Evolución", "a:evo:30")]], nuevo)
+                   [("🧾 Movimientos", "m:movs"), ("📈 Evolución", "a:evo:30")], [("⬅️ Más datos", "v:datos")]], nuevo)
 
 
 async def pantalla_analisis(update, context, nuevo=False):
@@ -200,7 +201,8 @@ async def pantalla_analisis(update, context, nuevo=False):
                    [("📆 Ciclo actual", "a:ciclo"), ("🎯 Presupuesto", "a:pres")],
                    [("🧩 Categorías", "a:cat:ciclo"), ("📈 Evolución", "a:evo:30")],
                    [("📅 Semana", "a:sem"), ("🔁 Suscripciones", "a:subs")],
-                   [("💳 Deudas", "ad:res"), ("🏷️ Corregir categoría", "a:corregir")]], nuevo)
+                   [("💳 Deudas", "ad:res"), ("🏷️ Corregir categoría", "a:corregir")],
+                   [("⬅️ Más datos", "v:datos")]], nuevo)
 
 
 async def pantalla_deudas(update, context, nuevo=False):
@@ -273,18 +275,69 @@ async def pantalla_ajustes(update, context, nuevo=False):
     await mostrar(update, context, texto_ajustes(), filas_ajustes(), nuevo)
 
 
+async def pantalla_inicio(update, context, nuevo=False):
+    await mostrar(update, context, *vistas.inicio(), nuevo=nuevo)
+
+
+async def pantalla_proximos(update, context, nuevo=False):
+    context.user_data.pop("proy_sim", None)
+    texto_, filas = await asyncio.to_thread(vistas.proximos_pantalla)
+    await mostrar(update, context, texto_, filas, nuevo)
+
+
+async def pantalla_mas(update, context, nuevo=False):
+    await mostrar(update, context, *vistas.mas(), nuevo=nuevo)
+
+
+async def pantalla_mas_datos(update, context, nuevo=False):
+    await mostrar(update, context, *vistas.mas_datos(), nuevo=nuevo)
+
+
+GRAFICOS = {"inicio": "🏠 Inicio", "deudas": "💳 Deudas", "metas": "🎯 Metas", "prox": "📈 Próximos meses"}
+
+
+def calcular_graficos(nombre):
+    """Imágenes de una pantalla sencilla (se calculan en un hilo). Lista vacía si aún no hay datos."""
+    import graficos_resumen as gr
+    import resumen
+    a = resumen.ahora()
+    fecha = date.fromisoformat(a["fecha_datos"]) if a and a.get("fecha_datos") else None
+    if nombre == "inicio":
+        return [x for x in ((gr.inicio(a), gr.pagos(a)) if a else ()) if x]
+    if nombre == "deudas":
+        return gr.deudas(resumen.de_deudas(), resumen.proximos(), fecha)
+    if nombre == "metas":
+        return gr.metas(resumen.de_metas(), resumen.proximos(), fecha)
+    prox = resumen.proximos()
+    return gr.proximos(prox, fecha) if prox else []
+
+
+async def enviar_graficos(context, nombre):
+    try:
+        imagenes = await asyncio.to_thread(calcular_graficos, nombre)
+    except Exception:
+        detalle.exception("No se pudo hacer el gráfico %s", nombre)
+        imagenes = None
+    if not imagenes:
+        await enviar(context, "📊 Aún no hay datos suficientes para este gráfico." if imagenes is not None
+                     else "⚠️ No se pudo hacer el gráfico. Lo he anotado en el registro.")
+        return
+    for imagen in imagenes:
+        await context.bot.send_photo(estado["chat_id"], photo=imagen)
+
+
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE, boton):
     context.user_data.pop("espera", None)
-    pantallas = {B_SALDO: pantalla_saldo, B_ANALISIS: pantalla_analisis, B_DEUDAS: pantalla_deudas,
-                 B_METAS: pantalla_metas, B_RECORDATORIOS: pantalla_recordatorios, B_AJUSTES: pantalla_ajustes,
-                 B_PROYECCION: bot_proyeccion.pantalla}
+    pantallas = {B_INICIO: pantalla_inicio, B_DEUDAS: pantalla_deudas, B_METAS: pantalla_metas,
+                 B_PROXIMOS: pantalla_proximos, B_MAS: pantalla_mas, B_ANALISIS: pantalla_mas_datos,
+                 B_RECORDATORIOS: pantalla_recordatorios, B_AJUSTES: pantalla_ajustes}
     await pantallas[boton](update, context, nuevo=True)
 
 
 async def inicio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("espera", None)
     await update.message.reply_text(
-        "✅ <b>Bot activo</b>\nUsa los botones de abajo. Tus datos se actualizan con el banco cada día a las "
+        "✅ <b>Bot activo</b>\nEmpieza por 🏠 Inicio. Tus datos se actualizan con el banco cada día a las "
         f"{config.valor('HORA_SALDO_DIARIO')} en silencio; todo lo demás se calcula al momento.",
         parse_mode="HTML", reply_markup=TECLADO)
 
@@ -296,7 +349,7 @@ async def inicio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def texto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     escrito = update.message.text.strip()
     boton = BOTONES_VIEJOS.get(escrito, escrito)
-    if boton in (B_SALDO, B_ANALISIS, B_DEUDAS, B_METAS, B_RECORDATORIOS, B_AJUSTES, B_PROYECCION):
+    if boton in BOTONES:
         await menu(update, context, boton)
         return
     espera = context.user_data.get("espera")
@@ -428,7 +481,8 @@ async def guardar_cobro(update, context, importe, tipo, fecha, movimiento_id=Non
             filas.append([("🎯 Marcar dinero movido", "mt:lista")])
         if not metas.activas() and reparto.activo():
             filas.append([("🎯 Crear una meta", "g:nueva")])
-        await enviar(context, analisis.texto_al_cobrar(), filas or None)
+        filas.append([("📋 Plan detallado", "v:plan")])
+        await enviar(context, vistas.texto_cobrado(), filas)
 
 
 async def repartir_lo_que_te_pagan(context, deuda):
@@ -508,10 +562,26 @@ async def atender_boton(update, context, dato):  # noqa: C901  (enrutador de bot
             return "Deshecho"
         return "Ya no se puede deshacer"
 
+    # --- Pantallas sencillas (v13)
+    if clave == "v":
+        pantallas = {"inicio": pantalla_inicio, "mas": pantalla_mas, "datos": pantalla_mas_datos,
+                     "deudas": pantalla_deudas, "metas": pantalla_metas, "prox": pantalla_proximos}
+        if partes[1] in pantallas:
+            await pantallas[partes[1]](update, context)
+        elif partes[1] == "pagos":
+            await mostrar(update, context, *vistas.pagos())
+        elif partes[1] == "plan":
+            await mostrar(update, context, analisis.texto_al_cobrar(), nuevo=True)
+        elif partes[1] == "g" and partes[2] in GRAFICOS:
+            await enviar_graficos(context, partes[2])
+            return "Gráfico enviado"
+        return None
+
     # --- Menús
     if clave == "m":
         pantallas = {"saldo": pantalla_saldo, "deudas": pantalla_deudas, "metas": pantalla_metas,
-                     "rec": pantalla_recordatorios, "ajustes": pantalla_ajustes, "analisis": pantalla_analisis}
+                     "rec": pantalla_recordatorios, "ajustes": pantalla_ajustes, "analisis": pantalla_analisis,
+                     "inicio": pantalla_inicio, "mas": pantalla_mas}
         if partes[1] in pantallas:
             await pantallas[partes[1]](update, context)
         elif partes[1] == "neto":
@@ -952,7 +1022,7 @@ def ejecutar():
     solo_yo = filters.Chat(chat_id=estado["chat_id"])
     app.add_handler(CommandHandler("start", inicio, filters=solo_yo))
     app.add_handler(CommandHandler("cancelar", inicio, filters=solo_yo))
-    app.add_handler(CommandHandler("saldo", lambda u, c: menu(u, c, B_SALDO), filters=solo_yo))
+    app.add_handler(CommandHandler("saldo", lambda u, c: menu(u, c, B_INICIO), filters=solo_yo))
     app.add_handler(CommandHandler("ajustes", lambda u, c: menu(u, c, B_AJUSTES), filters=solo_yo))
     app.add_handler(MessageHandler(solo_yo & filters.TEXT & ~filters.COMMAND, texto))
     app.add_handler(CallbackQueryHandler(pulsar))
